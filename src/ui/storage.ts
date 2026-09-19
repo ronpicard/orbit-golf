@@ -1,4 +1,5 @@
 const MUTE_KEY = 'orbit-golf.muted'
+const COACHED_KEY = 'orbit-golf.coached'
 
 /**
  * localStorage throws in some iframes and private-mode browsers. This probes it once and hands
@@ -28,6 +29,25 @@ export function saveMuted(storage: Storage | null, muted: boolean): void {
   if (!storage) return
   try {
     storage.setItem(MUTE_KEY, muted ? '1' : '0')
+  } catch {
+    // ignore
+  }
+}
+
+/** Whether the player has seen the first-launch drag coach mark (persists across sessions). */
+export function loadCoached(storage: Storage | null): boolean {
+  if (!storage) return false
+  try {
+    return storage.getItem(COACHED_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+export function saveCoached(storage: Storage | null): void {
+  if (!storage) return
+  try {
+    storage.setItem(COACHED_KEY, '1')
   } catch {
     // ignore
   }

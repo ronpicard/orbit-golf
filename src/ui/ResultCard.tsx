@@ -1,4 +1,5 @@
 import { scoreLabel } from '../game/progress.ts'
+import { parRelation, scoreClass } from './scoring.ts'
 
 export interface ResultInfo {
   levelIndex: number
@@ -22,12 +23,12 @@ interface ResultCardProps {
 export default function ResultCard({ result, isLastLevel, onNext, onReplay, onMenu }: ResultCardProps) {
   return (
     <div className="modal-backdrop">
-      <div className="result-card" role="dialog" aria-modal="true" aria-label="Level complete">
+      <div className="result-card" role="dialog" aria-modal="true" aria-label="Hole complete">
         <h2 className="result-title">Gate reached</h2>
         <p className="result-level-name">
-          Level {result.levelIndex + 1} — {result.levelName}
+          Hole {result.levelIndex + 1} - {result.levelName}
         </p>
-        <p className="result-score">{scoreLabel(result.strokes, result.par)}</p>
+        <p className={`result-score ${scoreClass(result.strokes, result.par)}`}>{scoreLabel(result.strokes, result.par)}</p>
         <p className="result-stats">
           {result.strokes} launch{result.strokes === 1 ? '' : 'es'} &middot; Par {result.par}
         </p>
@@ -35,19 +36,20 @@ export default function ResultCard({ result, isLastLevel, onNext, onReplay, onMe
 
         {isLastLevel && (
           <div className="result-congrats">
-            <p>You completed every level!</p>
+            <p>You finished the course!</p>
             <p>
-              Total score: {result.totalStrokes} strokes / {result.totalPar} par ({result.totalCompleted} levels)
+              Course total: {result.totalStrokes} / {result.totalPar} ({parRelation(result.totalStrokes, result.totalPar)}) &middot;{' '}
+              {result.totalCompleted} holes
             </p>
           </div>
         )}
 
         <div className="result-actions">
           <button type="button" className="primary-button" onClick={onNext}>
-            {isLastLevel ? 'Back to menu' : 'Next level'}
+            {isLastLevel ? 'Back to menu' : 'Next hole'}
           </button>
           <button type="button" className="secondary-button" onClick={onReplay}>
-            Replay
+            Replay hole
           </button>
           <button type="button" className="secondary-button" onClick={onMenu}>
             Menu

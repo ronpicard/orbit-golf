@@ -16,7 +16,7 @@ import type { ResultInfo } from './ui/ResultCard.tsx'
 import SandboxPalette from './ui/SandboxPalette.tsx'
 import type { SandboxTool } from './ui/SandboxPalette.tsx'
 import Toast from './ui/Toast.tsx'
-import { loadMuted, safeLocalStorage, saveMuted } from './ui/storage.ts'
+import { loadCoached, loadMuted, safeLocalStorage, saveCoached, saveMuted } from './ui/storage.ts'
 
 type Mode = 'menu' | 'level' | 'sandbox'
 
@@ -93,6 +93,7 @@ export default function App() {
   const [isFlying, setIsFlying] = useState(false)
   const [launchCount, setLaunchCount] = useState(0)
   const [muted, setMuted] = useState<boolean>(() => loadMuted(storage))
+  const [coached, setCoached] = useState<boolean>(() => loadCoached(storage))
   const [resultInfo, setResultInfo] = useState<ResultInfo | null>(null)
   const [toast, setToast] = useState<{ id: number; text: string } | null>(null)
 
@@ -298,6 +299,10 @@ export default function App() {
       setLaunchCount((c) => c + 1)
       setIsFlying(true)
       audio.launch(launchAim.power)
+      if (!coached) {
+        setCoached(true)
+        saveCoached(storage)
+      }
     },
     onResult: handleResult,
     onTap: (pos) => {
@@ -428,6 +433,7 @@ export default function App() {
               isFlying={isFlying}
               launchCount={mode === 'level' ? launchCount : null}
               muted={muted}
+              showCoachMark={mode === 'level' && levelIndex === 0 && !coached}
               onBack={goToMenu}
               onRestart={mode === 'level' ? restart : undefined}
               onToggleMute={toggleMute}

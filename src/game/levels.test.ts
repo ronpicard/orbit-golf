@@ -4,13 +4,13 @@ import { LEVELS, makeSandboxBody } from './levels.ts'
 import { bodyPosition, targetPosition, homeBody } from './physics.ts'
 import { solveLevel } from '../../scripts/solve.ts'
 
-const DIRECT_MUST_NOT_WIN = new Set(['l03', 'l04', 'l07', 'l08', 'l10'])
+const DIRECT_MUST_NOT_WIN = new Set(['l03', 'l04', 'l07', 'l08', 'l10', 'l13', 'l16', 'l17', 'l18'])
 
-test('level ids are unique and ordered l01..l10', () => {
+test('level ids are unique and ordered l01..l18', () => {
   const ids = LEVELS.map((l) => l.id)
   assert.deepEqual(
     ids,
-    Array.from({ length: 10 }, (_, i) => `l${String(i + 1).padStart(2, '0')}`),
+    Array.from({ length: 18 }, (_, i) => `l${String(i + 1).padStart(2, '0')}`),
   )
   assert.equal(new Set(ids).size, ids.length)
 })
@@ -81,6 +81,12 @@ test('every level has a non-empty name and hint, and par >= 1', () => {
     assert.ok(level.name.trim().length > 0, `${level.id}: empty name`)
     assert.ok(level.hint.trim().length > 0, `${level.id}: empty hint`)
     assert.ok(level.par >= 1, `${level.id}: par must be >= 1`)
+  }
+})
+
+test('no hint references the old pull-back aiming control', () => {
+  for (const level of LEVELS) {
+    assert.ok(!level.hint.toLowerCase().includes('pull'), `${level.id}: hint mentions pulling back`)
   }
 })
 

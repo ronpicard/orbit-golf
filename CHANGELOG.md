@@ -2,6 +2,25 @@
 
 All notable changes to Orbit Golf are documented in this file, following the [Keep a Changelog](https://keepachangelog.com/) format.
 
+## [1.1.0] - 2026-09-19
+
+### Added
+
+- Eight new holes, bringing the course to 18 with a front nine and back nine, a scorecard menu, subtotals per nine, and a running total against par.
+- A mini-golf camera: low and behind the home planet, looking down the course, gently following the ball in flight.
+- A neon-green fairway with glowing bumper rails at the out-of-bounds edge, a tee box under the home planet, and a flagged portal marking the hole.
+- Comet trail and particle effects for launch, sparks, crash debris, and the goal burst.
+- Ringed planets with clouds and atmosphere, cratered moons, a Doppler-shaded accretion disc with a lensed halo, and a richer sky.
+- Bloom, vignette, chromatic aberration, and film grain post-processing.
+- A first-visit coach mark and a power meter.
+
+### Changed
+
+- Aiming is reversed and more intuitive: drag in the direction you want to shoot, drag further for more power, and release to launch. The on-screen arrow now runs exactly parallel to your drag. There is no more pull-back slingshot.
+- The opening holes are harder.
+- The ball now rolls on the curved gravity sheet and planets sit in their own funnels, so every arc reads in 3D.
+- Candy arcade colours throughout.
+
 ## [1.0.0] - 2026-09-19
 
 ### Added

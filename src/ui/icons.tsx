@@ -115,6 +115,16 @@ export function LargePlanetIcon({ className }: IconProps) {
   )
 }
 
+export function GolfFlagIcon({ className }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} width="1em" height="1em" aria-hidden="true">
+      <path d="M6 21V4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+      <path d="M6 4l11 3.2L6 10.4Z" fill="currentColor" />
+      <path d="M3 21h9" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+    </svg>
+  )
+}
+
 export function BlackHoleIcon({ className }: IconProps) {
   return (
     <svg viewBox="0 0 24 24" className={className} width="1em" height="1em" aria-hidden="true">

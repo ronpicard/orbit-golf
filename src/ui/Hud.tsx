@@ -77,9 +77,16 @@ interface HudProps {
   isFlying: boolean
   launchCount: number | null
   muted: boolean
+  showCoachMark: boolean
   onBack: () => void
   onRestart?: () => void
   onToggleMute: () => void
+}
+
+function powerColorClass(power: number): string {
+  if (power < 0.4) return 'power-low'
+  if (power < 0.75) return 'power-mid'
+  return 'power-high'
 }
 
 export default function Hud({
@@ -91,6 +98,7 @@ export default function Hud({
   isFlying,
   launchCount,
   muted,
+  showCoachMark,
   onBack,
   onRestart,
   onToggleMute,
@@ -143,7 +151,7 @@ export default function Hud({
           <BackIcon />
         </button>
         <div className="top-bar-title">
-          <span className="level-title">{levelNumber !== null ? `Level ${levelNumber} — ${level.name}` : level.name}</span>
+          <span className="level-title">{levelNumber !== null ? `Hole ${levelNumber} - ${level.name}` : level.name}</span>
           {launchCount !== null && (
             <span className="level-meta">
               Par {level.par} &middot; Launches {launchCount}
@@ -152,7 +160,7 @@ export default function Hud({
         </div>
         <div className="top-bar-actions">
           {onRestart && (
-            <button type="button" className="icon-button" aria-label="Restart level" onClick={onRestart}>
+            <button type="button" className="icon-button" aria-label="Replay hole" onClick={onRestart}>
               <RestartIcon />
             </button>
           )}
@@ -168,6 +176,17 @@ export default function Hud({
       </div>
 
       <div className={`hint-pill ${showHint ? 'visible' : ''}`}>{level.hint}</div>
+
+      {showCoachMark && (
+        <div className="coach-mark" aria-hidden="true">
+          <div className="coach-mark-track">
+            <span className="coach-dot coach-dot-3" />
+            <span className="coach-dot coach-dot-2" />
+            <span className="coach-dot coach-dot-1" />
+          </div>
+          <p className="coach-caption">Drag toward your target, release to launch</p>
+        </div>
+      )}
 
       <div className="bottom-bar">
         <div className="readout-group">
@@ -202,6 +221,12 @@ export default function Hud({
             <HoldButton label="Increase power" className="nudge-button" onTrigger={() => nudgePower(1)}>
               <PlusIcon />
             </HoldButton>
+          </div>
+          <div className="power-meter" role="presentation">
+            <div
+              className={`power-meter-fill ${powerColorClass(aim.power)}`}
+              style={{ width: `${Math.round(aim.power * 100)}%` }}
+            />
           </div>
         </div>
       </div>

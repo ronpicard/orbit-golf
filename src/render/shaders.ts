@@ -1,4 +1,27 @@
 import * as THREE from 'three'
+import { WELL_DEPTH_GLSL } from './sheet.ts'
+import {
+  COLOR_AIM_HIGH,
+  COLOR_AIM_LOW,
+  COLOR_AIM_MID,
+  COLOR_BUMPER_A,
+  COLOR_BUMPER_B,
+  COLOR_CUP_RING,
+  COLOR_FAIRWAY_DEEP,
+  COLOR_FAIRWAY_HIGH,
+  COLOR_FAIRWAY_LOW,
+  COLOR_FLAG,
+  COLOR_GRID_DEEP,
+  COLOR_GRID_FLAT,
+  COLOR_GRID_MID,
+  COLOR_PORTAL,
+  COLOR_RING_A,
+  COLOR_RING_B,
+  COLOR_SKY_A,
+  COLOR_SKY_B,
+  COLOR_SKY_MAGENTA,
+  COLOR_SKY_TEAL,
+} from './palette.ts'
 
 /**
  * GLSL helpers and factory functions for every custom material in the engine. Kept separate from
@@ -32,12 +55,15 @@ const NOISE_GLSL = `
     }
     return sum;
   }
+  vec2 warp(vec2 p) {
+    return vec2(fbm(p + vec2(1.7, 9.2)), fbm(p + vec2(8.3, 2.8)));
+  }
 `
 
 /** Maximum number of massive bodies the gravity-well sheet shader accepts. */
 export const MAX_WELL_BODIES = 12
 
-/** Deep-space background: large BackSide sphere with a soft procedural nebula gradient. */
+/** Deep-space background: large BackSide sphere, indigo/violet base with magenta + teal nebula accents. */
 export function createNebulaSphere(): THREE.Mesh {
   const geometry = new THREE.SphereGeometry(900, 24, 16)
   const material = new THREE.ShaderMaterial({
@@ -55,15 +81,17 @@ export function createNebulaSphere(): THREE.Mesh {
       ${NOISE_GLSL}
       void main() {
         vec3 d = normalize(vDir);
-        float n = fbm(d.xy * 2.2 + d.z * 1.3 + uTime * 0.003);
-        float n2 = fbm(d.yz * 1.6 - uTime * 0.002);
-        vec3 deep = vec3(0.015, 0.02, 0.05);
-        vec3 blue = vec3(0.09, 0.12, 0.32);
-        vec3 purple = vec3(0.18, 0.08, 0.28);
-        vec3 col = mix(deep, blue, smoothstep(0.3, 0.85, n));
-        col = mix(col, purple, smoothstep(0.4, 0.9, n2) * 0.6);
-        // Values are linear; keep the sky dark so trails and the grid read clearly.
-        gl_FragColor = vec4(col * 0.32, 1.0);
+        vec2 uv = d.xy * 2.0 + d.z * 1.2;
+        vec2 w = warp(uv * 0.8 + uTime * 0.002);
+        float n = fbm(uv + w * 1.5);
+        float n2 = fbm(d.yz * 1.6 - uTime * 0.0015 + w * 0.8);
+        vec3 base = mix(${glslColor(COLOR_SKY_A)}, ${glslColor(COLOR_SKY_B)}, smoothstep(0.2, 0.9, n));
+        vec3 magenta = ${glslColor(COLOR_SKY_MAGENTA)};
+        vec3 teal = ${glslColor(COLOR_SKY_TEAL)};
+        vec3 col = mix(base, magenta, smoothstep(0.45, 0.9, n) * 0.55);
+        col = mix(col, teal, smoothstep(0.4, 0.85, n2) * 0.45);
+        // Keep the sky dark so the bright green fairway and neon bumpers read as the focal point.
+        gl_FragColor = vec4(col * 0.8, 1.0);
       }
     `,
     side: THREE.BackSide,
@@ -75,12 +103,13 @@ export function createNebulaSphere(): THREE.Mesh {
   return mesh
 }
 
-/** ~2500 twinkling background stars on a large shell. */
+/** ~2500 twinkling background stars with colour-temperature variety on a large shell. */
 export function createStarfield(): THREE.Points {
   const count = 2500
   const positions = new Float32Array(count * 3)
   const sizes = new Float32Array(count)
   const brightness = new Float32Array(count)
+  const temperature = new Float32Array(count)
   for (let i = 0; i < count; i++) {
     // Uniform points on a sphere shell.
     const u = Math.random() * 2 - 1
@@ -92,20 +121,25 @@ export function createStarfield(): THREE.Points {
     positions[i * 3 + 2] = r * Math.sin(theta) * radius
     sizes[i] = 1.0 + Math.random() * 2.5
     brightness[i] = 0.4 + Math.random() * 0.6
+    temperature[i] = Math.random()
   }
   const geometry = new THREE.BufferGeometry()
   geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
   geometry.setAttribute('aSize', new THREE.Float32BufferAttribute(sizes, 1))
   geometry.setAttribute('aBrightness', new THREE.Float32BufferAttribute(brightness, 1))
+  geometry.setAttribute('aTemp', new THREE.Float32BufferAttribute(temperature, 1))
   const material = new THREE.ShaderMaterial({
     uniforms: { uTime: { value: 0 } },
     vertexShader: `
       attribute float aSize;
       attribute float aBrightness;
+      attribute float aTemp;
       varying float vBrightness;
+      varying float vTemp;
       uniform float uTime;
       void main() {
         vBrightness = aBrightness * (0.75 + 0.25 * sin(uTime * 1.5 + aSize * 12.0));
+        vTemp = aTemp;
         vec4 mv = modelViewMatrix * vec4(position, 1.0);
         gl_Position = projectionMatrix * mv;
         gl_PointSize = aSize;
@@ -113,11 +147,15 @@ export function createStarfield(): THREE.Points {
     `,
     fragmentShader: `
       varying float vBrightness;
+      varying float vTemp;
       void main() {
         vec2 c = gl_PointCoord - 0.5;
         float d = length(c);
         float a = smoothstep(0.5, 0.0, d);
-        gl_FragColor = vec4(vec3(1.0, 0.98, 0.95) * vBrightness, a);
+        vec3 cool = vec3(0.75, 0.85, 1.0);
+        vec3 warm = vec3(1.0, 0.88, 0.72);
+        vec3 col = mix(cool, warm, vTemp);
+        gl_FragColor = vec4(col * vBrightness, a);
       }
     `,
     transparent: true,
@@ -128,7 +166,31 @@ export function createStarfield(): THREE.Points {
   return points
 }
 
-/** Procedurally banded planet/moon surface: fbm bands between two palette colours + fresnel rim. */
+/** A bright disc + soft additive glow standing in for the sun, placed far away in the light direction. */
+export function createSunSprite(glowTexture: THREE.Texture): THREE.Group {
+  const group = new THREE.Group()
+  const discGeometry = new THREE.CircleGeometry(9, 32)
+  const discMaterial = new THREE.MeshBasicMaterial({ color: 0xfff6e0, transparent: true, depthWrite: false })
+  const disc = new THREE.Mesh(discGeometry, discMaterial)
+  disc.renderOrder = -8
+  group.add(disc)
+
+  const glowMaterial = new THREE.SpriteMaterial({
+    map: glowTexture,
+    color: 0xffe9b0,
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    opacity: 0.9,
+  })
+  const glow = new THREE.Sprite(glowMaterial)
+  glow.scale.set(70, 70, 70)
+  glow.renderOrder = -8
+  group.add(glow)
+  return group
+}
+
+/** Procedurally banded planet surface: vivid palette colours, drifting cloud layers, day/night terminator. */
 export function createPlanetMaterial(palette: [string, string]): THREE.ShaderMaterial {
   return new THREE.ShaderMaterial({
     uniforms: {
@@ -162,24 +224,77 @@ export function createPlanetMaterial(palette: [string, string]): THREE.ShaderMat
         vec3 n = normalize(vNormal);
         // Bands follow latitude plus a slow-drifting fbm warp so they read as alien terrain, not stripes.
         float lat = vObjPos.y * 1.4;
-        float warp = fbm(vObjPos.xz * 1.6 + uTime * 0.02) * 1.2;
-        float bands = fbm(vec2(lat + warp, vObjPos.x * 0.8 + vObjPos.z * 0.8));
+        float warpA = fbm(vObjPos.xz * 1.6 + uTime * 0.02) * 1.2;
+        float bands = fbm(vec2(lat + warpA, vObjPos.x * 0.8 + vObjPos.z * 0.8));
         vec3 base = mix(uColorA, uColorB, smoothstep(0.25, 0.75, bands));
-        float ndl = max(dot(n, normalize(uSunDir)), 0.0);
-        vec3 lit = base * (0.18 + 0.82 * ndl);
+
+        // Two cloud layers drifting at different speeds/scales.
+        float clouds1 = fbm(vec2(lat * 1.3 + warpA, vObjPos.x * 1.1 + vObjPos.z * 1.1) + uTime * 0.012);
+        float clouds2 = fbm(vec2(lat * 0.85 - warpA * 0.6, vObjPos.x * 1.7 - vObjPos.z * 1.7) - uTime * 0.02);
+        float cloudMix = smoothstep(0.58, 0.86, clouds1) * 0.45 + smoothstep(0.62, 0.9, clouds2) * 0.3;
+        vec3 cloudColor = mix(base, vec3(0.96, 0.97, 1.0), 0.65);
+        base = mix(base, cloudColor, clamp(cloudMix, 0.0, 0.85));
+
+        vec3 sunDir = normalize(uSunDir);
+        float ndl = dot(n, sunDir);
+        // Crisp day/night terminator; night side stays lifted so the vivid palette still reads.
+        float term = smoothstep(-0.12, 0.12, ndl);
+        vec3 nightSide = base * 0.12;
+        vec3 dayLit = base * (0.3 + 0.72 * max(ndl, 0.0));
+        vec3 lit = mix(nightSide, dayLit, term);
+
+        // Warm rim on the lit limb.
         vec3 viewDir = normalize(cameraPosition - vWorldPos);
-        float fresnel = pow(1.0 - max(dot(n, viewDir), 0.0), 2.5);
-        vec3 col = lit + fresnel * mix(uColorA, uColorB, 0.5) * 0.6;
-        gl_FragColor = vec4(col, 1.0);
+        float rim = pow(1.0 - max(dot(n, viewDir), 0.0), 2.5);
+        lit += rim * mix(uColorA, uColorB, 0.5) * 0.55 * (0.3 + 0.7 * term);
+
+        gl_FragColor = vec4(lit, 1.0);
       }
     `,
   })
 }
 
-/** Thin additive atmosphere shell drawn just outside a planet, BackSide so it glows at the limb. */
+/** Cratered grey moon surface: noise-based darker spots, same terminator treatment as planets. */
+export function createMoonMaterial(): THREE.ShaderMaterial {
+  return new THREE.ShaderMaterial({
+    uniforms: {
+      uSunDir: { value: new THREE.Vector3(0.6, 0.8, 0.4).normalize() },
+    },
+    vertexShader: `
+      varying vec3 vNormal;
+      varying vec3 vObjPos;
+      void main() {
+        vNormal = normalize(normalMatrix * normal);
+        vObjPos = position;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: `
+      varying vec3 vNormal;
+      varying vec3 vObjPos;
+      uniform vec3 uSunDir;
+      ${NOISE_GLSL}
+      void main() {
+        vec3 n = normalize(vNormal);
+        float base = fbm(vObjPos.xz * 3.0 + vObjPos.y * 3.0);
+        float craters = smoothstep(0.55, 0.62, fbm(vObjPos.xy * 6.0)) * 0.35;
+        vec3 grey = mix(vec3(0.62, 0.62, 0.66), vec3(0.38, 0.38, 0.42), base);
+        grey *= (1.0 - craters);
+        float ndl = max(dot(n, normalize(uSunDir)), 0.0);
+        vec3 lit = grey * (0.14 + 0.86 * ndl);
+        gl_FragColor = vec4(lit, 1.0);
+      }
+    `,
+  })
+}
+
+/** Thin additive atmosphere shell, brighter scattering on the sun-facing side. */
 export function createAtmosphereMaterial(color: string): THREE.ShaderMaterial {
   return new THREE.ShaderMaterial({
-    uniforms: { uColor: { value: new THREE.Color(color) } },
+    uniforms: {
+      uColor: { value: new THREE.Color(color) },
+      uSunDir: { value: new THREE.Vector3(0.6, 0.8, 0.4).normalize() },
+    },
     vertexShader: `
       varying vec3 vNormal;
       varying vec3 vWorldPos;
@@ -194,10 +309,15 @@ export function createAtmosphereMaterial(color: string): THREE.ShaderMaterial {
       varying vec3 vNormal;
       varying vec3 vWorldPos;
       uniform vec3 uColor;
+      uniform vec3 uSunDir;
       void main() {
+        vec3 n = normalize(vNormal);
         vec3 viewDir = normalize(cameraPosition - vWorldPos);
-        float fresnel = pow(1.0 - max(dot(normalize(vNormal), viewDir), 0.0), 3.0);
-        gl_FragColor = vec4(uColor, fresnel * 0.9);
+        // The shell draws back faces, whose normals point away from the camera: use |n.v| so the
+        // glow hugs the limb instead of covering the whole disc at full strength.
+        float fresnel = pow(1.0 - abs(dot(n, viewDir)), 3.0);
+        float sunSide = 0.4 + 0.6 * max(dot(n, normalize(uSunDir)), 0.0);
+        gl_FragColor = vec4(uColor, fresnel * 0.9 * sunSide);
       }
     `,
     side: THREE.BackSide,
@@ -207,9 +327,49 @@ export function createAtmosphereMaterial(color: string): THREE.ShaderMaterial {
   })
 }
 
+/** Pastel banded ring system (RingGeometry) for large planets, with a gap and a brighter lit side. */
+export function createRingMaterial(): THREE.ShaderMaterial {
+  return new THREE.ShaderMaterial({
+    uniforms: {
+      uSunDir: { value: new THREE.Vector3(0.6, 0.8, 0.4).normalize() },
+      uColorA: { value: new THREE.Color(COLOR_RING_A) },
+      uColorB: { value: new THREE.Color(COLOR_RING_B) },
+    },
+    vertexShader: `
+      varying vec2 vUv;
+      varying vec3 vNormal;
+      void main() {
+        vUv = uv;
+        vNormal = normalize(normalMatrix * normal);
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: `
+      varying vec2 vUv;
+      varying vec3 vNormal;
+      uniform vec3 uSunDir;
+      uniform vec3 uColorA;
+      uniform vec3 uColorB;
+      float hash1(float x) { return fract(sin(x * 91.34) * 47453.5); }
+      void main() {
+        float r = vUv.y;
+        float bands = hash1(floor(r * 26.0));
+        float gap = smoothstep(0.44, 0.46, r) * (1.0 - smoothstep(0.52, 0.54, r));
+        vec3 col = mix(uColorA, uColorB, bands);
+        float lit = 0.5 + 0.5 * max(dot(normalize(vNormal), normalize(uSunDir)), 0.0);
+        float alpha = (0.14 + 0.3 * bands) * (1.0 - gap);
+        gl_FragColor = vec4(col * (0.5 + 0.7 * lit), alpha);
+      }
+    `,
+    transparent: true,
+    side: THREE.DoubleSide,
+    depthWrite: false,
+  })
+}
+
 /**
- * The gravity-well ground sheet. Displaces a flat XZ grid downward by the combined potential of up
- * to MAX_WELL_BODIES massive bodies, and draws a glowing cyan grid on top, brighter where deeper.
+ * The fairway: a putt-putt green shaped like the level bounds (rounded corners, everything outside
+ * discarded), pushed down into gravity funnels via the shared wellDepth() function.
  */
 export function createWellMaterial(): THREE.ShaderMaterial {
   return new THREE.ShaderMaterial({
@@ -219,6 +379,9 @@ export function createWellMaterial(): THREE.ShaderMaterial {
       uSoft: { value: new Float32Array(MAX_WELL_BODIES) },
       uCount: { value: 0 },
       uHalfExtent: { value: new THREE.Vector2(50, 50) },
+      uCornerRadius: { value: 1.2 },
+      uCameraPos: { value: new THREE.Vector3() },
+      uTime: { value: 0 },
     },
     vertexShader: `
       #define MAX_BODIES ${MAX_WELL_BODIES}
@@ -227,40 +390,81 @@ export function createWellMaterial(): THREE.ShaderMaterial {
       uniform int uCount;
       varying vec2 vGridXZ;
       varying float vDepth;
-      // K chosen so mu=20, soft(radius)=1.2 gives roughly a 2 unit deep well.
-      const float K = 0.12;
-      float wellDepth(vec2 p) {
-        float depth = 0.0;
-        for (int i = 0; i < MAX_BODIES; i++) {
-          if (i >= uCount) break;
-          vec2 d = p - uBodies[i].xz;
-          float r2 = dot(d, d);
-          float s = uSoft[i];
-          depth += uBodies[i].y / sqrt(r2 + s * s);
-        }
-        return depth * K;
-      }
+      ${WELL_DEPTH_GLSL}
       void main() {
         vGridXZ = position.xy; // plane geometry is authored in XY before rotation
         float depth = wellDepth(position.xy);
-        vDepth = clamp(depth, 0.0, 3.5);
-        vec3 displaced = vec3(position.x, position.y, -vDepth);
+        vDepth = depth;
+        vec3 displaced = vec3(position.x, position.y, -depth);
         gl_Position = projectionMatrix * modelViewMatrix * vec4(displaced, 1.0);
       }
     `,
     fragmentShader: `
+      #define MAX_BODIES ${MAX_WELL_BODIES}
       varying vec2 vGridXZ;
       varying float vDepth;
       uniform vec2 uHalfExtent;
+      uniform float uCornerRadius;
+      uniform vec3 uCameraPos;
+      uniform float uTime;
+      uniform vec3 uBodies[MAX_BODIES];
+      uniform int uCount;
+
+      float roundedBoxSDF(vec2 p, vec2 b, float r) {
+        vec2 q = abs(p) - b + r;
+        return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;
+      }
+
       void main() {
+        float sdf = roundedBoxSDF(vGridXZ, uHalfExtent, uCornerRadius);
+        float mask = 1.0 - smoothstep(-0.06, 0.06, sdf);
+        if (mask <= 0.001) discard;
+
         vec2 g = abs(fract(vGridXZ - 0.5) - 0.5);
         vec2 fw = fwidth(vGridXZ);
         vec2 lineAA = smoothstep(vec2(0.0), fw * 1.5, g);
-        float line = 1.0 - min(lineAA.x, lineAA.y);
-        float edge = 1.0 - smoothstep(0.75, 1.0, length(vGridXZ / uHalfExtent));
-        vec3 color = mix(vec3(0.05, 0.6, 0.85), vec3(0.4, 0.9, 1.0), clamp(vDepth / 3.0, 0.0, 1.0));
-        float alpha = line * edge * (0.16 + 0.6 * clamp(vDepth / 2.0, 0.0, 1.0));
-        if (alpha <= 0.001) discard;
+        float mainLine = 1.0 - min(lineAA.x, lineAA.y);
+
+        // Sub-grid (0.25 unit) only where the sheet is meaningfully deformed.
+        vec2 subG = abs(fract(vGridXZ * 4.0 - 0.5) - 0.5);
+        vec2 subFw = fwidth(vGridXZ * 4.0);
+        vec2 subAA = smoothstep(vec2(0.0), subFw * 1.5, subG);
+        float subLine = (1.0 - min(subAA.x, subAA.y)) * smoothstep(0.7, 1.5, vDepth) * 0.3;
+        float line = max(mainLine, subLine);
+
+        float depthN = clamp(vDepth / 2.4, 0.0, 1.0);
+
+        // Turf fill: emerald/teal on the flats, mowing stripes every 2 units along x, darkening to indigo.
+        vec3 low = ${glslColor(COLOR_FAIRWAY_LOW)};
+        vec3 high = ${glslColor(COLOR_FAIRWAY_HIGH)};
+        vec3 deep = ${glslColor(COLOR_FAIRWAY_DEEP)};
+        float stripe = step(1.0, mod(floor(vGridXZ.x / 2.0), 2.0)) * 0.08;
+        vec3 turf = mix(low, high, 0.5) + stripe;
+        turf = mix(turf, deep, depthN);
+
+        // Grid line colour: mint on the flats, through hot pink, to orange in deep wells.
+        vec3 mint = ${glslColor(COLOR_GRID_FLAT)};
+        vec3 pink = ${glslColor(COLOR_GRID_MID)};
+        vec3 orange = ${glslColor(COLOR_GRID_DEEP)};
+        vec3 lineColor = mix(mint, pink, smoothstep(0.0, 0.6, depthN));
+        lineColor = mix(lineColor, orange, smoothstep(0.6, 1.0, depthN));
+
+        // Slow radial brightness pulse travelling outward from each body.
+        float pulse = 0.0;
+        for (int i = 0; i < MAX_BODIES; i++) {
+          if (i >= uCount) break;
+          float r = length(vGridXZ - uBodies[i].xz);
+          float wave = sin(r * 1.6 - uTime * 1.8) * 0.5 + 0.5;
+          pulse += wave * exp(-r * 0.12);
+        }
+        pulse = clamp(pulse, 0.0, 1.0);
+
+        float camFade = 1.0 - smoothstep(40.0, 90.0, length(uCameraPos.xz - vGridXZ));
+        float fillAlpha = 0.30 * mask;
+        float lineAlpha = line * mask * (0.35 + 0.55 * depthN + 0.3 * pulse) * camFade;
+
+        vec3 color = mix(turf, lineColor, lineAlpha);
+        float alpha = max(fillAlpha, lineAlpha);
         gl_FragColor = vec4(color, alpha);
       }
     `,
@@ -270,7 +474,37 @@ export function createWellMaterial(): THREE.ShaderMaterial {
   })
 }
 
-/** Swirling orange/white accretion disc for a black hole, additive so it feeds the bloom pass. */
+/** Neon putt-putt bumper: a tube following the level bounds, alternating cyan/magenta with a chase. */
+export function createBumperMaterial(): THREE.ShaderMaterial {
+  return new THREE.ShaderMaterial({
+    uniforms: {
+      uTime: { value: 0 },
+      uColorA: { value: new THREE.Color(COLOR_BUMPER_A) },
+      uColorB: { value: new THREE.Color(COLOR_BUMPER_B) },
+    },
+    vertexShader: `
+      varying vec2 vUv;
+      void main() {
+        vUv = uv;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: `
+      varying vec2 vUv;
+      uniform float uTime;
+      uniform vec3 uColorA;
+      uniform vec3 uColorB;
+      void main() {
+        float seg = step(0.5, fract(vUv.x * 10.0 - uTime * 0.35));
+        vec3 col = mix(uColorA, uColorB, seg);
+        float shade = 0.6 + 0.4 * sin(vUv.y * 3.14159);
+        gl_FragColor = vec4(col * shade * 1.3, 1.0);
+      }
+    `,
+  })
+}
+
+/** Swirling orange/white accretion disc with a Doppler-brighter, bluer approaching side. */
 export function createAccretionDiscMaterial(): THREE.ShaderMaterial {
   return new THREE.ShaderMaterial({
     uniforms: { uTime: { value: 0 } },
@@ -298,8 +532,12 @@ export function createAccretionDiscMaterial(): THREE.ShaderMaterial {
         vec3 cool = vec3(0.5, 0.12, 0.05);
         vec3 col = mix(cool, mid, smoothstep(0.2, 0.7, swirl));
         col = mix(col, hot, smoothstep(0.55, 0.95, bands) * 0.8);
+        // Doppler beaming: one side brighter and bluer (approaching), the other dimmer and redder.
+        float doppler = 0.55 + 0.45 * cos(a - 0.7);
+        vec3 blueShift = vec3(0.65, 0.8, 1.0);
+        col = mix(col * 0.75, col * blueShift * 1.35, smoothstep(0.5, 1.0, doppler));
         float fade = smoothstep(0.0, 0.18, vUv.y) * (1.0 - smoothstep(0.82, 1.0, vUv.y));
-        gl_FragColor = vec4(col * 0.95, fade * 0.9);
+        gl_FragColor = vec4(col * (0.7 + 0.5 * doppler), fade * 0.9);
       }
     `,
     transparent: true,
@@ -336,37 +574,8 @@ export function createPhotonRingMaterial(): THREE.ShaderMaterial {
   })
 }
 
-/** Pulsing emerald target-gate ring, additive so it blooms. */
-export function createGateRingMaterial(): THREE.ShaderMaterial {
-  return new THREE.ShaderMaterial({
-    uniforms: { uTime: { value: 0 }, uFlash: { value: 0 } },
-    vertexShader: `
-      varying vec2 vUv;
-      void main() {
-        vUv = uv;
-        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-      }
-    `,
-    fragmentShader: `
-      varying vec2 vUv;
-      uniform float uTime;
-      uniform float uFlash;
-      void main() {
-        float pulse = 0.65 + 0.35 * sin(uTime * 2.5);
-        vec3 base = vec3(0.20, 0.83, 0.60);
-        vec3 col = mix(base, vec3(1.0), uFlash);
-        gl_FragColor = vec4(col * (pulse + uFlash * 2.0), 1.0);
-      }
-    `,
-    transparent: true,
-    blending: THREE.AdditiveBlending,
-    depthWrite: false,
-    side: THREE.DoubleSide,
-  })
-}
-
-/** Faint inner disc of the target gate. */
-export function createGateDiscMaterial(): THREE.ShaderMaterial {
+/** Camera-facing lensed halo billboard around a black hole: a thin bright ring plus faint arcs. */
+export function createLensedHaloMaterial(): THREE.ShaderMaterial {
   return new THREE.ShaderMaterial({
     uniforms: { uTime: { value: 0 } },
     vertexShader: `
@@ -380,14 +589,136 @@ export function createGateDiscMaterial(): THREE.ShaderMaterial {
       varying vec2 vUv;
       uniform float uTime;
       void main() {
-        float d = length(vUv - 0.5) * 2.0;
-        float a = (1.0 - smoothstep(0.0, 1.0, d)) * (0.12 + 0.05 * sin(uTime * 2.5));
-        gl_FragColor = vec4(vec3(0.2, 0.83, 0.6), a);
+        vec2 c = vUv - 0.5;
+        float r = length(c) * 2.0;
+        float a = atan(c.y, c.x);
+        float ring = smoothstep(0.02, 0.0, abs(r - 0.72)) * 1.4;
+        float arcs = smoothstep(0.06, 0.0, abs(r - 0.88)) * (0.5 + 0.5 * sin(a * 3.0 + uTime * 0.6)) * 0.5;
+        float alpha = clamp(ring + arcs, 0.0, 1.0) * smoothstep(1.0, 0.5, r);
+        vec3 col = vec3(1.0, 0.92, 0.8);
+        gl_FragColor = vec4(col, alpha);
       }
     `,
     transparent: true,
     blending: THREE.AdditiveBlending,
     depthWrite: false,
+    side: THREE.DoubleSide,
+  })
+}
+
+/** Pulsing energy-ring material for the standing portal torus; speeds up as uProximity rises. */
+export function createGateRingMaterial(): THREE.ShaderMaterial {
+  return new THREE.ShaderMaterial({
+    uniforms: { uTime: { value: 0 }, uFlash: { value: 0 }, uProximity: { value: 0 } },
+    vertexShader: `
+      varying vec2 vUv;
+      void main() {
+        vUv = uv;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: `
+      varying vec2 vUv;
+      uniform float uTime;
+      uniform float uFlash;
+      uniform float uProximity;
+      void main() {
+        float freq = mix(2.5, 8.0, uProximity);
+        float pulse = 0.65 + 0.35 * sin(uTime * freq);
+        vec3 base = ${glslColor(COLOR_PORTAL)};
+        vec3 col = mix(base, vec3(1.0), uFlash);
+        gl_FragColor = vec4(col * (pulse + uFlash * 2.0), 1.0);
+      }
+    `,
+    transparent: true,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+  })
+}
+
+/** Swirling emerald/mint energy disc inside the portal ring. */
+export function createGateDiscMaterial(): THREE.ShaderMaterial {
+  return new THREE.ShaderMaterial({
+    uniforms: { uTime: { value: 0 } },
+    vertexShader: `
+      varying vec2 vUv;
+      void main() {
+        vUv = uv;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: `
+      varying vec2 vUv;
+      uniform float uTime;
+      ${NOISE_GLSL}
+      void main() {
+        vec2 c = vUv - 0.5;
+        float r = length(c) * 2.0;
+        float a = atan(c.y, c.x);
+        float swirl = fbm(vec2(a * 1.6 - uTime * 1.2, r * 3.0 + uTime * 0.4));
+        float d = (1.0 - smoothstep(0.0, 1.0, r)) * (0.35 + 0.5 * swirl);
+        vec3 col = ${glslColor(COLOR_PORTAL)};
+        gl_FragColor = vec4(col, d);
+      }
+    `,
+    transparent: true,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+  })
+}
+
+/** Ground capture ring: reads like a golf cup - white rim, dark centre. */
+export function createCupRingMaterial(): THREE.ShaderMaterial {
+  return new THREE.ShaderMaterial({
+    uniforms: { uTime: { value: 0 } },
+    vertexShader: `
+      varying vec2 vUv;
+      void main() {
+        vUv = uv;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: `
+      varying vec2 vUv;
+      uniform float uTime;
+      void main() {
+        float pulse = 0.75 + 0.25 * sin(uTime * 2.2);
+        gl_FragColor = vec4(${glslColor(COLOR_CUP_RING)} * pulse, 0.9);
+      }
+    `,
+    transparent: true,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+  })
+}
+
+/** Dark, near-flat cup interior disc. */
+export function createCupDiscMaterial(): THREE.MeshBasicMaterial {
+  return new THREE.MeshBasicMaterial({ color: 0x0a0a12, transparent: true, opacity: 0.92, side: THREE.DoubleSide })
+}
+
+/** Vertex-waving triangular golf flag. */
+export function createFlagMaterial(): THREE.ShaderMaterial {
+  return new THREE.ShaderMaterial({
+    uniforms: { uTime: { value: 0 } },
+    vertexShader: `
+      uniform float uTime;
+      varying float vX;
+      void main() {
+        vX = position.x;
+        vec3 p = position;
+        p.z += sin(p.x * 6.0 + uTime * 6.0) * 0.03 * p.x;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 1.0);
+      }
+    `,
+    fragmentShader: `
+      varying float vX;
+      void main() {
+        gl_FragColor = vec4(${glslColor(COLOR_FLAG)}, 1.0);
+      }
+    `,
     side: THREE.DoubleSide,
   })
 }
@@ -408,7 +739,7 @@ export function createBeamMaterial(): THREE.ShaderMaterial {
       uniform float uTime;
       void main() {
         float fade = (1.0 - vUv.y) * 0.5 + 0.06 * sin(uTime * 3.0 + vUv.y * 10.0);
-        vec3 col = vec3(0.25, 0.9, 0.65);
+        vec3 col = ${glslColor(COLOR_PORTAL)};
         gl_FragColor = vec4(col, clamp(fade, 0.0, 1.0) * 0.35);
       }
     `,
@@ -419,7 +750,68 @@ export function createBeamMaterial(): THREE.ShaderMaterial {
   })
 }
 
-/** Radial-gradient CanvasTexture used for the probe's glow sprite. */
+/** Flat aim ribbon: animated forward-flowing chevrons, coloured mint -> yellow -> hot pink with power. */
+export function createAimRibbonMaterial(): THREE.ShaderMaterial {
+  return new THREE.ShaderMaterial({
+    uniforms: { uTime: { value: 0 }, uPower: { value: 0.5 } },
+    vertexShader: `
+      varying vec2 vUv;
+      void main() {
+        vUv = uv;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: `
+      varying vec2 vUv;
+      uniform float uTime;
+      uniform float uPower;
+      void main() {
+        vec3 low = ${glslColor(COLOR_AIM_LOW)};
+        vec3 mid = ${glslColor(COLOR_AIM_MID)};
+        vec3 high = ${glslColor(COLOR_AIM_HIGH)};
+        vec3 col = mix(low, mid, smoothstep(0.0, 0.4, uPower));
+        col = mix(col, high, smoothstep(0.4, 0.75, uPower));
+        float chevron = fract(vUv.x * 6.0 - uTime * 2.5);
+        float shape = smoothstep(0.0, 0.15, chevron) * (1.0 - smoothstep(0.35, 0.5, chevron));
+        float edge = smoothstep(0.0, 0.12, vUv.y) * (1.0 - smoothstep(0.88, 1.0, vUv.y));
+        float alpha = edge * (0.35 + 0.65 * shape);
+        gl_FragColor = vec4(col, alpha);
+      }
+    `,
+    transparent: true,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+  })
+}
+
+/** Soft glowing prediction dots that shrink along the path (per-vertex aSize attribute). */
+export function createPredictionDotsMaterial(): THREE.ShaderMaterial {
+  return new THREE.ShaderMaterial({
+    uniforms: {},
+    vertexShader: `
+      attribute float aSize;
+      void main() {
+        vec4 mv = modelViewMatrix * vec4(position, 1.0);
+        gl_Position = projectionMatrix * mv;
+        gl_PointSize = aSize * (260.0 / max(-mv.z, 0.001));
+      }
+    `,
+    fragmentShader: `
+      void main() {
+        vec2 c = gl_PointCoord - 0.5;
+        float d = length(c);
+        float a = smoothstep(0.5, 0.0, d);
+        gl_FragColor = vec4(vec3(0.9, 0.98, 1.0), a * 0.7);
+      }
+    `,
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+  })
+}
+
+/** Radial-gradient CanvasTexture used for glow sprites (probe, sun, tee). */
 export function createGlowTexture(): THREE.CanvasTexture {
   const size = 128
   const canvas = document.createElement('canvas')
@@ -437,4 +829,50 @@ export function createGlowTexture(): THREE.CanvasTexture {
   const texture = new THREE.CanvasTexture(canvas)
   texture.colorSpace = THREE.SRGBColorSpace
   return texture
+}
+
+/** Final post-process pass: gentle vignette, slight chromatic aberration toward the edges, film grain. */
+export function createPostFxShader(): { uniforms: Record<string, THREE.IUniform>; vertexShader: string; fragmentShader: string } {
+  return {
+    uniforms: {
+      tDiffuse: { value: null },
+      uTime: { value: 0 },
+    },
+    vertexShader: `
+      varying vec2 vUv;
+      void main() {
+        vUv = uv;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: `
+      uniform sampler2D tDiffuse;
+      uniform float uTime;
+      varying vec2 vUv;
+      float grainHash(vec2 p) {
+        return fract(sin(dot(p, vec2(12.9898, 78.233)) + uTime * 60.0) * 43758.5453);
+      }
+      void main() {
+        vec2 c = vUv - 0.5;
+        float d = length(c);
+        float ca = d * 0.0025;
+        vec2 dir = normalize(c + 1e-6);
+        float r = texture2D(tDiffuse, vUv - dir * ca).r;
+        float g = texture2D(tDiffuse, vUv).g;
+        float b = texture2D(tDiffuse, vUv + dir * ca).b;
+        vec3 col = vec3(r, g, b);
+        float vignette = smoothstep(0.9, 0.35, d);
+        col *= mix(0.72, 1.0, vignette);
+        float grain = (grainHash(vUv * vec2(1024.0, 1024.0)) - 0.5) * 0.012;
+        col += grain;
+        gl_FragColor = vec4(col, 1.0);
+      }
+    `,
+  }
+}
+
+/** Converts a CSS hex colour into a GLSL `vec3(...)` literal for baking constant palette colours into shaders. */
+function glslColor(hex: string): string {
+  const c = new THREE.Color(hex)
+  return `vec3(${c.r.toFixed(6)}, ${c.g.toFixed(6)}, ${c.b.toFixed(6)})`
 }

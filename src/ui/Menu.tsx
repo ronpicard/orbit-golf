@@ -1,7 +1,8 @@
 import { isUnlocked, scoreLabel, totalScore } from '../game/progress.ts'
 import type { Progress } from '../game/progress.ts'
 import type { Level } from '../game/types.ts'
-import { LockIcon } from './icons.tsx'
+import { GolfFlagIcon, LockIcon } from './icons.tsx'
+import { parRelation, scoreClass } from './scoring.ts'
 
 interface MenuProps {
   levels: Level[]
@@ -11,62 +12,135 @@ interface MenuProps {
   onSandbox: () => void
 }
 
+/** Holes per nine, in the golf sense — independent of how many holes the course actually has. */
+const NINE = 9
+
 function hasAnyBest(progress: Progress): boolean {
   return Object.keys(progress.best).length > 0
+}
+
+/** The next hole the player hasn't beaten yet, mirroring App's own "continue" logic. */
+function nextUnplayedIndex(progress: Progress, levels: Level[]): number {
+  for (let i = 0; i < levels.length; i++) {
+    if (isUnlocked(progress, levels, i) && progress.best[levels[i].id] === undefined) return i
+  }
+  return -1
+}
+
+interface NineSectionProps {
+  title: string
+  levels: Level[]
+  start: number
+  end: number
+  progress: Progress
+  currentIndex: number
+  onSelectLevel: (index: number) => void
+}
+
+function NineSection({ title, levels, start, end, progress, currentIndex, onSelectLevel }: NineSectionProps) {
+  const holes = levels.slice(start, end)
+  if (holes.length === 0) return null
+  const sub = totalScore(progress, holes)
+
+  return (
+    <section className="scorecard-section">
+      <h2 className="scorecard-heading">{title}</h2>
+      <div className="hole-grid">
+        {holes.map((level, i) => {
+          const index = start + i
+          const unlocked = isUnlocked(progress, levels, index)
+          const best = progress.best[level.id]
+          const completed = best !== undefined
+          const state = !unlocked ? 'locked' : completed ? 'completed' : index === currentIndex ? 'current' : ''
+          return (
+            <button
+              key={level.id}
+              type="button"
+              className={`hole-card ${state}`}
+              disabled={!unlocked}
+              title={level.name}
+              aria-label={unlocked ? `Hole ${index + 1}: ${level.name}` : `Hole ${index + 1} locked`}
+              onClick={() => onSelectLevel(index)}
+            >
+              {!unlocked && <LockIcon className="hole-lock" />}
+              {completed && <GolfFlagIcon className="hole-flag" />}
+              <span className="hole-card-number">{index + 1}</span>
+              <span className="hole-card-par">Par {level.par}</span>
+              <span className={`hole-card-best ${best !== undefined ? scoreClass(best, level.par) : ''}`}>
+                {best !== undefined ? scoreLabel(best, level.par) : '—'}
+              </span>
+            </button>
+          )
+        })}
+      </div>
+      <p className="scorecard-subtotal">
+        {sub.completed > 0 ? `${sub.strokes} launches / ${sub.par} par` : 'No holes completed yet'}
+      </p>
+    </section>
+  )
 }
 
 export default function Menu({ levels, progress, onPlay, onSelectLevel, onSandbox }: MenuProps) {
   const total = totalScore(progress, levels)
   const playLabel = hasAnyBest(progress) ? 'Continue' : 'Play'
+  const currentIndex = nextUnplayedIndex(progress, levels)
 
   return (
     <div className="menu-screen">
       <div className="menu-panel">
         <div className="menu-header">
-          <h1 className="menu-title">ORBIT GOLF</h1>
+          <div className="menu-title-row">
+            <GolfFlagIcon className="menu-flag-icon" />
+            <h1 className="menu-title">ORBIT GOLF</h1>
+          </div>
           <p className="menu-tagline">Real gravity. One launch at a time.</p>
           <button type="button" className="play-button" onClick={onPlay}>
             {playLabel}
           </button>
         </div>
 
-        <div className="level-grid">
-          {levels.map((level, index) => {
-            const unlocked = isUnlocked(progress, levels, index)
-            const best = progress.best[level.id]
-            return (
-              <button
-                key={level.id}
-                type="button"
-                className={`level-card ${unlocked ? '' : 'locked'}`}
-                disabled={!unlocked}
-                aria-label={unlocked ? `Level ${index + 1}: ${level.name}` : `Level ${index + 1} locked`}
-                onClick={() => onSelectLevel(index)}
-              >
-                {!unlocked && <LockIcon className="level-lock" />}
-                <span className="level-card-number">{index + 1}</span>
-                <span className="level-card-name">{level.name}</span>
-                <span className="level-card-par">Par {level.par}</span>
-                <span className="level-card-best">{best !== undefined ? scoreLabel(best, level.par) : '—'}</span>
-              </button>
-            )
-          })}
-
-          <button type="button" className="level-card sandbox-card" onClick={onSandbox}>
-            <span className="level-card-number">&infin;</span>
-            <span className="level-card-name">Sandbox</span>
-            <span className="level-card-par">Free play</span>
-          </button>
+        <div className="scorecard">
+          <NineSection
+            title="Front nine"
+            levels={levels}
+            start={0}
+            end={NINE}
+            progress={progress}
+            currentIndex={currentIndex}
+            onSelectLevel={onSelectLevel}
+          />
+          <NineSection
+            title="Back nine"
+            levels={levels}
+            start={NINE}
+            end={levels.length}
+            progress={progress}
+            currentIndex={currentIndex}
+            onSelectLevel={onSelectLevel}
+          />
         </div>
 
+        <button type="button" className="hole-card sandbox-card" onClick={onSandbox}>
+          <span className="hole-card-number">&infin;</span>
+          <span className="hole-card-name">Sandbox</span>
+          <span className="hole-card-par">Free play</span>
+        </button>
+
         <div className="menu-total">
-          Total: {total.strokes} strokes / {total.par} par &middot; {total.completed}/{levels.length} complete
+          {total.completed > 0 ? (
+            <>
+              Total {total.strokes} / {total.par} ({parRelation(total.strokes, total.par)})
+            </>
+          ) : (
+            'No holes completed yet'
+          )}{' '}
+          &middot; {total.completed}/{levels.length} complete
         </div>
 
         <div className="how-to-play">
-          <p>Drag anywhere to pull back like a slingshot, then release to launch.</p>
-          <p>Gravity bends your probe&rsquo;s path — plan around planets and black holes.</p>
-          <p>Reach the green gate in as few launches as possible.</p>
+          <p>Drag in the direction you want to shoot - the further you drag, the more power. Release to launch.</p>
+          <p>Gravity bends your shot, so plan around planets, moons, and black holes.</p>
+          <p>Reach the green portal in as few launches as possible.</p>
         </div>
       </div>
     </div>
