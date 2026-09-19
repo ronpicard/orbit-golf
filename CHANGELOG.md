@@ -2,6 +2,14 @@
 
 All notable changes to Orbit Golf are documented in this file, following the [Keep a Changelog](https://keepachangelog.com/) format.
 
+## [2.0.1] - 2026-09-19
+
+### Fixed
+
+- The alien golfer now stands beside the ball in a side-on stance and swings the club through it along the target line. Before, it stood on top of the ball and chopped at the turf in front of it.
+- The aim arrow, predicted path, and power colour are visible again while aiming. The fairway had been drawn over them.
+- Gentle putts now get a gentle swing.
+
 ## [2.0.0] - 2026-09-19
 
 ### Added

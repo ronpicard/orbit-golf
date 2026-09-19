@@ -548,6 +548,9 @@ function buildWellMesh(level: Level): WellVisual {
   const mesh = new THREE.Mesh(geometry, material)
   mesh.rotation.x = -Math.PI / 2
   mesh.position.set(center.x, 0, center.y)
+  // The turf is nearly opaque but does not write depth. Draw it before every other transparent
+  // object, or it paints over the aim ribbon, prediction, trails, and rings that lie on it.
+  mesh.renderOrder = -10
   return { mesh, material, geometry, maskTexture, center }
 }
 
@@ -842,6 +845,9 @@ export function createEngine(canvas: HTMLCanvasElement, events: EngineEvents): E
   const predictCurveMesh = new THREE.Mesh(predictCurveGeometry, predictCurveMaterial)
   predictCurveMesh.frustumCulled = false
 
+  ribbonMesh.renderOrder = 10
+  predictCurveMesh.renderOrder = 11
+  predictionPoints.renderOrder = 12
   const aimGroup = new THREE.Group()
   aimGroup.add(ribbonMesh, predictCurveMesh, predictionPoints)
   scene.add(aimGroup)
@@ -1366,7 +1372,7 @@ export function createEngine(canvas: HTMLCanvasElement, events: EngineEvents): E
     flying = true
     ballState = null
     alien.setAimAngle(launchAim.angle)
-    const contactDelay = reducedMotion ? 0 : alien.playSwing()
+    const contactDelay = reducedMotion ? 0 : alien.playSwing(launchAim.power)
     if (contactDelay <= 0) {
       performContact(launchAim)
     } else {
