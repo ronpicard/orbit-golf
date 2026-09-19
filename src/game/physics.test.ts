@@ -1,376 +1,587 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import type { Aim, Body, Level, ProbeState, Rail } from './types.ts'
 import {
-  DT,
   MIN_POWER,
-  LAUNCH_CLEARANCE,
+  BALL_RADIUS,
+  ROLL_DECEL,
+  WALL_RESTITUTION,
+  CAPTURE_SPEED,
+  MAX_SHOT_TIME,
   railPosition,
   clampAim,
+  courseBounds,
+  pointInPolygon,
+  onFairway,
   launchState,
   acceleration,
   step,
   checkOutcome,
   simulate,
   predictPath,
-  specificEnergy,
   defaultAim,
 } from './physics.ts'
+import type { Aim, BallState, Body, Level, Rail, Vec2 } from './types.ts'
 
-const TAU = Math.PI * 2
+// ---------------------------------------------------------------------------
+// Fixtures
+// ---------------------------------------------------------------------------
 
-function makeBody(overrides: Partial<Body> = {}): Body {
-  return {
-    id: 'home',
-    kind: 'planet',
-    mu: 0,
-    radius: 1,
-    pos: { x: 0, y: 0 },
-    palette: ['#111111', '#222222'],
-    ...overrides,
-  }
-}
+const RECT_COURSE: Vec2[] = [
+  { x: 0, y: 0 },
+  { x: 100, y: 0 },
+  { x: 100, y: 40 },
+  { x: 0, y: 40 },
+]
 
 function makeLevel(overrides: Partial<Level> = {}): Level {
+  const course = overrides.course ?? RECT_COURSE
   return {
-    id: 'test-level',
-    name: 'Test Level',
-    hint: 'A test level',
+    id: 'test',
+    name: 'Test Hole',
+    hint: 'test',
     par: 3,
-    homeId: 'home',
-    bodies: [makeBody()],
-    target: { pos: { x: 20, y: 0 }, radius: 1 },
-    bounds: { minX: -100, maxX: 100, minY: -100, maxY: 100 },
-    maxSpeed: 10,
-    maxTime: 30,
+    tee: { x: 50, y: 20 },
+    course,
+    islands: [],
+    bodies: [],
+    target: { pos: { x: 95, y: 20 }, radius: 1 },
+    bounds: courseBounds(course),
+    maxSpeed: 12,
     ...overrides,
   }
 }
 
-// ---------- railPosition ----------
+function bodyFixture(overrides: Partial<Body> = {}): Body {
+  return {
+    id: 'planet-1',
+    kind: 'planet',
+    mu: 40,
+    radius: 2,
+    pos: { x: 60, y: 20 },
+    palette: ['#ffffff', '#000000'],
+    ...overrides,
+  }
+}
 
-test('railPosition returns the phase point at t = 0', () => {
-  const rail: Rail = { center: { x: 1, y: 2 }, radius: 5, period: 4, phase: Math.PI / 3 }
+// ---------------------------------------------------------------------------
+// railPosition / clampAim
+// ---------------------------------------------------------------------------
+
+test('railPosition at t=0 sits at the phase point', () => {
+  const rail: Rail = { center: { x: 3, y: 4 }, radius: 5, period: 10, phase: 0 }
   const p = railPosition(rail, 0)
-  assert.ok(Math.abs(p.x - (1 + 5 * Math.cos(Math.PI / 3))) < 1e-9)
-  assert.ok(Math.abs(p.y - (2 + 5 * Math.sin(Math.PI / 3))) < 1e-9)
+  assert.ok(Math.abs(p.x - 8) < 1e-9)
+  assert.ok(Math.abs(p.y - 4) < 1e-9)
 })
 
-test('railPosition returns to the phase point after one period', () => {
-  const rail: Rail = { center: { x: 0, y: 0 }, radius: 3, period: 7, phase: 1.1 }
+test('railPosition returns to the same point after one full period', () => {
+  const rail: Rail = { center: { x: 0, y: 0 }, radius: 7, period: 6, phase: 1.2 }
   const p0 = railPosition(rail, 0)
-  const p1 = railPosition(rail, 7)
+  const p1 = railPosition(rail, 6)
   assert.ok(Math.abs(p0.x - p1.x) < 1e-9)
   assert.ok(Math.abs(p0.y - p1.y) < 1e-9)
 })
 
-test('railPosition with negative period orbits clockwise', () => {
-  const rail: Rail = { center: { x: 0, y: 0 }, radius: 1, period: -4, phase: 0 }
-  // With a positive period, a small positive dt increases the angle (counter-clockwise);
-  // with a negative period the angle decreases (clockwise).
-  const pPos = railPosition({ ...rail, period: 4 }, 0.1)
-  const pNeg = railPosition(rail, 0.1)
-  const angPos = Math.atan2(pPos.y, pPos.x)
-  const angNeg = Math.atan2(pNeg.y, pNeg.x)
-  assert.ok(angPos > 0)
-  assert.ok(angNeg < 0)
-  assert.ok(Math.abs(angPos + angNeg) < 1e-9)
+test('a negative period orbits clockwise (opposite y sign from a positive period)', () => {
+  const pos: Rail = { center: { x: 0, y: 0 }, radius: 5, period: 10, phase: 0 }
+  const neg: Rail = { center: { x: 0, y: 0 }, radius: 5, period: -10, phase: 0 }
+  const pPos = railPosition(pos, 0.1)
+  const pNeg = railPosition(neg, 0.1)
+  assert.ok(pPos.y > 0)
+  assert.ok(pNeg.y < 0)
 })
 
-// ---------- clampAim ----------
-
-test('clampAim clamps power to [MIN_POWER, 1]', () => {
+test('clampAim clamps power into [MIN_POWER, 1]', () => {
   assert.equal(clampAim({ angle: 0, power: -5 }).power, MIN_POWER)
-  assert.equal(clampAim({ angle: 0, power: 0 }).power, MIN_POWER)
-  assert.equal(clampAim({ angle: 0, power: 2 }).power, 1)
+  assert.equal(clampAim({ angle: 0, power: 5 }).power, 1)
   assert.equal(clampAim({ angle: 0, power: 0.5 }).power, 0.5)
 })
 
 test('clampAim wraps angle into [-PI, PI]', () => {
-  const a1 = clampAim({ angle: 4, power: 0.5 })
+  const a1 = clampAim({ angle: 3 * Math.PI, power: 0.5 })
   assert.ok(a1.angle >= -Math.PI && a1.angle <= Math.PI)
-  assert.ok(Math.abs(a1.angle - (4 - TAU)) < 1e-9)
+  assert.ok(Math.abs(a1.angle - Math.PI) < 1e-9 || Math.abs(a1.angle + Math.PI) < 1e-9)
 
-  const a2 = clampAim({ angle: -4, power: 0.5 })
+  const a2 = clampAim({ angle: -3 * Math.PI, power: 0.5 })
   assert.ok(a2.angle >= -Math.PI && a2.angle <= Math.PI)
-  assert.ok(Math.abs(a2.angle - (-4 + TAU)) < 1e-9)
-
-  const a3 = clampAim({ angle: Math.PI / 2, power: 0.5 })
-  assert.ok(Math.abs(a3.angle - Math.PI / 2) < 1e-9)
 })
 
-// ---------- launchState ----------
+// ---------------------------------------------------------------------------
+// courseBounds / pointInPolygon / onFairway
+// ---------------------------------------------------------------------------
 
-test('launchState starts at home radius + clearance along aim with speed power * maxSpeed', () => {
-  const home = makeBody({ id: 'home', radius: 2, pos: { x: 5, y: -3 } })
-  const level = makeLevel({ bodies: [home], homeId: 'home', maxSpeed: 8 })
-  const aim: Aim = { angle: Math.PI / 4, power: 0.5 }
-  const s = launchState(level, aim)
-  const d = home.radius + LAUNCH_CLEARANCE
-  const expectedX = home.pos.x + Math.cos(Math.PI / 4) * d
-  const expectedY = home.pos.y + Math.sin(Math.PI / 4) * d
-  assert.ok(Math.abs(s.pos.x - expectedX) < 1e-9)
-  assert.ok(Math.abs(s.pos.y - expectedY) < 1e-9)
-  const speed = Math.hypot(s.vel.x, s.vel.y)
-  assert.ok(Math.abs(speed - 0.5 * 8) < 1e-9)
+test('courseBounds computes the bounding box of a polygon', () => {
+  const b = courseBounds(RECT_COURSE)
+  assert.deepEqual(b, { minX: 0, maxX: 100, minY: 0, maxY: 40 })
+})
+
+test('pointInPolygon on a convex square', () => {
+  const square: Vec2[] = [
+    { x: 0, y: 0 },
+    { x: 10, y: 0 },
+    { x: 10, y: 10 },
+    { x: 0, y: 10 },
+  ]
+  assert.equal(pointInPolygon({ x: 5, y: 5 }, square), true)
+  assert.equal(pointInPolygon({ x: 20, y: 5 }, square), false)
+})
+
+// L-shaped concave polygon: a 10x10 square with a 5x5 notch removed from the top-right corner.
+const L_SHAPE: Vec2[] = [
+  { x: 0, y: 0 },
+  { x: 10, y: 0 },
+  { x: 10, y: 5 },
+  { x: 5, y: 5 },
+  { x: 5, y: 10 },
+  { x: 0, y: 10 },
+]
+
+test('pointInPolygon on a concave L-shape excludes points inside the notch', () => {
+  // Inside the solid part of the L.
+  assert.equal(pointInPolygon({ x: 2, y: 2 }, L_SHAPE), true)
+  assert.equal(pointInPolygon({ x: 8, y: 2 }, L_SHAPE), true)
+  // Inside the notch (the removed 5x5 corner) should be outside the polygon.
+  assert.equal(pointInPolygon({ x: 8, y: 8 }, L_SHAPE), false)
+})
+
+test('onFairway is true inside the course and false inside an island', () => {
+  const level = makeLevel({
+    islands: [
+      [
+        { x: 40, y: 15 },
+        { x: 45, y: 15 },
+        { x: 45, y: 25 },
+        { x: 40, y: 25 },
+      ],
+    ],
+  })
+  assert.equal(onFairway(level, { x: 10, y: 20 }), true)
+  assert.equal(onFairway(level, { x: 42, y: 20 }), false)
+  assert.equal(onFairway(level, { x: 200, y: 20 }), false)
+})
+
+// ---------------------------------------------------------------------------
+// launchState
+// ---------------------------------------------------------------------------
+
+test('launchState starts at `from` with speed power*maxSpeed along aim, counters zeroed', () => {
+  const level = makeLevel()
+  const from = { x: 10, y: 10 }
+  const aim: Aim = { angle: 0, power: 0.5 }
+  const s = launchState(level, from, aim)
+  assert.deepEqual(s.pos, { x: 10, y: 10 })
+  assert.ok(Math.abs(s.vel.x - 6) < 1e-9) // 0.5 * 12
+  assert.ok(Math.abs(s.vel.y - 0) < 1e-9)
   assert.equal(s.t, 0)
+  assert.equal(s.bounces, 0)
+  assert.equal(s.lastBounceSpeed, 0)
 })
 
-// ---------- acceleration ----------
+// ---------------------------------------------------------------------------
+// Friction on an empty rectangle
+// ---------------------------------------------------------------------------
 
-test('acceleration points at a single body with magnitude mu / r^2', () => {
-  const body = makeBody({ id: 'planet', mu: 50, radius: 1, pos: { x: 10, y: 0 } })
-  const level = makeLevel({ bodies: [body], homeId: 'planet' })
-  const out = { x: 0, y: 0 }
-  acceleration(level, 0, 0, 0, out)
-  const r2 = 100
-  const expectedMag = 50 / r2
-  const mag = Math.hypot(out.x, out.y)
-  assert.ok(Math.abs(mag - expectedMag) < 1e-6)
-  // Direction should point toward the body, i.e. +x.
-  assert.ok(out.x > 0)
-  assert.ok(Math.abs(out.y) < 1e-9)
+test('a putt on an empty course always ends in rest', () => {
+  const level = makeLevel({ target: { pos: { x: -1000, y: -1000 }, radius: 0.01 } })
+  const result = simulate(level, { x: 50, y: 20 }, { angle: 0, power: 0.4 })
+  assert.equal(result.outcome, 'rest')
 })
 
-test('zero-mu asteroids contribute nothing to acceleration', () => {
-  const planet = makeBody({ id: 'planet', mu: 50, radius: 1, pos: { x: 10, y: 0 } })
-  const asteroid = makeBody({ id: 'rock', kind: 'asteroid', mu: 0, radius: 0.5, pos: { x: 0, y: 10 } })
-  const levelWithout = makeLevel({ bodies: [planet], homeId: 'planet' })
-  const levelWith = makeLevel({ bodies: [planet, asteroid], homeId: 'planet' })
-  const outWithout = { x: 0, y: 0 }
-  const outWith = { x: 0, y: 0 }
-  acceleration(levelWithout, 0, 0, 0, outWithout)
-  acceleration(levelWith, 0, 0, 0, outWith)
-  assert.ok(Math.abs(outWithout.x - outWith.x) < 1e-12)
-  assert.ok(Math.abs(outWithout.y - outWith.y) < 1e-12)
+test('a harder putt rolls farther and takes longer', () => {
+  const level = makeLevel({ target: { pos: { x: -1000, y: -1000 }, radius: 0.01 } })
+  const soft = simulate(level, { x: 5, y: 20 }, { angle: 0, power: 0.2 })
+  const hard = simulate(level, { x: 5, y: 20 }, { angle: 0, power: 0.9 })
+  assert.equal(soft.outcome, 'rest')
+  assert.equal(hard.outcome, 'rest')
+  assert.ok(hard.end.x - 5 > soft.end.x - 5)
+  assert.ok(hard.time > soft.time)
 })
 
-// ---------- energy conservation ----------
+test('a full-power roll distance (maxSpeed 12) lands between 18 and 24 units', () => {
+  const level = makeLevel({ target: { pos: { x: -1000, y: -1000 }, radius: 0.01 } })
+  const result = simulate(level, { x: 5, y: 20 }, { angle: 0, power: 1 })
+  assert.equal(result.outcome, 'rest')
+  const dist = result.end.x - 5
+  assert.ok(dist >= 18 && dist <= 24, `distance was ${dist}`)
+})
 
-test('a circular orbit conserves specific energy and radius over 3 orbits', () => {
-  const mu = 400
-  const r = 10
-  const central = makeBody({ id: 'star', mu, radius: 0.5, pos: { x: 0, y: 0 } })
-  const level = makeLevel({ bodies: [central], homeId: 'star', bounds: { minX: -1000, maxX: 1000, minY: -1000, maxY: 1000 } })
-  const speed = Math.sqrt(mu / r)
-  const s: ProbeState = { pos: { x: r, y: 0 }, vel: { x: 0, y: speed }, t: 0 }
-  const initialEnergy = specificEnergy(central, s)
-  const period = TAU * Math.sqrt((r * r * r) / mu)
-  const totalTime = period * 3
-  const steps = Math.round(totalTime / DT)
-  let maxEnergyDrift = 0
-  let maxRadiusDrift = 0
-  for (let i = 0; i < steps; i++) {
+test('the ball never speeds up on a body-free course while no wall is hit', () => {
+  const level = makeLevel()
+  const s = launchState(level, { x: 50, y: 20 }, { angle: 0, power: 0.6 })
+  let prevSpeed = Math.hypot(s.vel.x, s.vel.y)
+  for (let i = 0; i < 200; i++) {
     step(level, s)
-    const e = specificEnergy(central, s)
-    const radius = Math.hypot(s.pos.x, s.pos.y)
-    maxEnergyDrift = Math.max(maxEnergyDrift, Math.abs((e - initialEnergy) / initialEnergy))
-    maxRadiusDrift = Math.max(maxRadiusDrift, Math.abs((radius - r) / r))
+    if (s.bounces > 0) break
+    const speed = Math.hypot(s.vel.x, s.vel.y)
+    assert.ok(speed <= prevSpeed + 1e-9, `speed increased at step ${i}`)
+    prevSpeed = speed
   }
-  assert.ok(maxEnergyDrift < 0.001, `energy drift too large: ${maxEnergyDrift}`)
-  assert.ok(maxRadiusDrift < 0.005, `radius drift too large: ${maxRadiusDrift}`)
 })
 
-// ---------- simulate ----------
+test('the resting point lies on the launch line for a wall-free straight putt', () => {
+  const level = makeLevel({ target: { pos: { x: -1000, y: -1000 }, radius: 0.01 } })
+  const from = { x: 5, y: 20 }
+  const result = simulate(level, from, { angle: 0, power: 0.5 })
+  assert.equal(result.outcome, 'rest')
+  assert.ok(Math.abs(result.end.y - from.y) < 1e-6)
+})
 
-test('simulate: a straight shot at a target with no obstacles returns goal', () => {
-  const home = makeBody({ id: 'home', mu: 0, radius: 1, pos: { x: 0, y: 0 } })
+// ---------------------------------------------------------------------------
+// Walls
+// ---------------------------------------------------------------------------
+
+test('a putt at a wall bounces back, stays inside the course, and increments bounces', () => {
+  const level = makeLevel()
+  const s = launchState(level, { x: 90, y: 20 }, { angle: 0, power: 1 })
+  for (let i = 0; i < 3000; i++) {
+    step(level, s)
+    assert.ok(
+      pointInPolygon({ x: s.pos.x - BALL_RADIUS, y: s.pos.y }, level.course) ||
+        pointInPolygon(s.pos, level.course),
+      `ball escaped the course at step ${i}`,
+    )
+    // Tolerant containment check: shrink the ball radius margin against the walls.
+    assert.ok(s.pos.x >= -BALL_RADIUS - 1e-6 && s.pos.x <= 100 + BALL_RADIUS + 1e-6)
+    assert.ok(s.pos.y >= -BALL_RADIUS - 1e-6 && s.pos.y <= 40 + BALL_RADIUS + 1e-6)
+    const outcome = checkOutcome(level, s)
+    if (outcome.outcome) break
+  }
+  assert.ok(s.bounces >= 1)
+})
+
+test('speed after a head-on bounce is about WALL_RESTITUTION times speed before, within 3%', () => {
+  const level = makeLevel()
+  const s = launchState(level, { x: 90, y: 20 }, { angle: 0, power: 1 })
+  let speedBefore = 0
+  let ratio: number | null = null
+  for (let i = 0; i < 3000 && ratio === null; i++) {
+    const preSpeed = Math.hypot(s.vel.x, s.vel.y)
+    const preBounces = s.bounces
+    step(level, s)
+    if (s.bounces > preBounces) {
+      speedBefore = preSpeed
+      const speedAfter = Math.hypot(s.vel.x, s.vel.y)
+      ratio = speedAfter / speedBefore
+    }
+  }
+  assert.ok(ratio !== null, 'no bounce occurred')
+  assert.ok(Math.abs((ratio as number) - WALL_RESTITUTION) / WALL_RESTITUTION < 0.03, `ratio was ${ratio}`)
+})
+
+test('a 45-degree bank off a horizontal wall flips vy and keeps the vx sign', () => {
+  const level = makeLevel()
+  const s = launchState(level, { x: 50, y: 35 }, { angle: Math.PI / 4, power: 1 }) // up and to the right
+  let before: Vec2 | null = null
+  let after: Vec2 | null = null
+  for (let i = 0; i < 3000 && after === null; i++) {
+    const preVel = { x: s.vel.x, y: s.vel.y }
+    const preBounces = s.bounces
+    step(level, s)
+    if (s.bounces > preBounces) {
+      before = preVel
+      after = { x: s.vel.x, y: s.vel.y }
+    }
+  }
+  assert.ok(before && after, 'no bounce occurred')
+  assert.ok((before as Vec2).x > 0 && (after as Vec2).x > 0, 'vx sign should be kept (positive)')
+  assert.ok((before as Vec2).y > 0 && (after as Vec2).y < 0, 'vy sign should flip')
+})
+
+test('lastBounceSpeed is positive after a bounce', () => {
+  const level = makeLevel()
+  const s = launchState(level, { x: 90, y: 20 }, { angle: 0, power: 1 })
+  for (let i = 0; i < 3000 && s.bounces === 0; i++) step(level, s)
+  assert.ok(s.bounces >= 1)
+  assert.ok(s.lastBounceSpeed > 0)
+})
+
+test('a ball rolling into a concave corner does not tunnel out', () => {
+  // Concave notch: an L-shaped course. Aim the ball straight into the inner corner.
+  const course: Vec2[] = [
+    { x: 0, y: 0 },
+    { x: 20, y: 0 },
+    { x: 20, y: 10 },
+    { x: 10, y: 10 },
+    { x: 10, y: 20 },
+    { x: 0, y: 20 },
+  ]
+  const level = makeLevel({ course, target: { pos: { x: -1000, y: -1000 }, radius: 0.01 } })
+  // Inner (concave) corner is at (10, 10). Aim from inside the L straight at it.
+  const s = launchState(level, { x: 5, y: 5 }, { angle: Math.atan2(10 - 5, 10 - 5), power: 1 })
+  for (let i = 0; i < 5000; i++) {
+    step(level, s)
+    assert.ok(
+      pointInPolygon(s.pos, course) ||
+        Math.hypot(s.pos.x - 10, s.pos.y - 10) < BALL_RADIUS + 0.5,
+      `ball tunneled out at step ${i}: (${s.pos.x}, ${s.pos.y})`,
+    )
+    if (checkOutcome(level, s).outcome) break
+  }
+})
+
+test('a ball already touching a wall and heading away from it is not reflected', () => {
+  const level = makeLevel()
+  // Right wall is at x = 100. Put the ball right at the touching distance, heading left (away).
+  const s: BallState = {
+    pos: { x: 100 - BALL_RADIUS, y: 20 },
+    vel: { x: -3, y: 0 },
+    t: 0,
+    bounces: 0,
+    lastBounceSpeed: 0,
+  }
+  step(level, s)
+  assert.equal(s.bounces, 0)
+  assert.ok(s.vel.x < 0, 'ball should keep moving away from the wall')
+})
+
+// ---------------------------------------------------------------------------
+// Islands
+// ---------------------------------------------------------------------------
+
+test('a putt straight at an island bounces back and never enters it', () => {
+  const island: Vec2[] = [
+    { x: 55, y: 15 },
+    { x: 65, y: 15 },
+    { x: 65, y: 25 },
+    { x: 55, y: 25 },
+  ]
+  const level = makeLevel({ islands: [island], target: { pos: { x: -1000, y: -1000 }, radius: 0.01 } })
+  const s = launchState(level, { x: 50, y: 20 }, { angle: 0, power: 1 })
+  let bounced = false
+  for (let i = 0; i < 5000; i++) {
+    step(level, s)
+    assert.equal(pointInPolygon(s.pos, island), false, `ball entered the island at step ${i}`)
+    if (s.bounces > 0) bounced = true
+    if (checkOutcome(level, s).outcome) break
+  }
+  assert.ok(bounced)
+})
+
+// ---------------------------------------------------------------------------
+// Cup
+// ---------------------------------------------------------------------------
+
+test('a slow putt over the cup is a goal, and closest is ~0', () => {
   const level = makeLevel({
-    bodies: [home],
-    homeId: 'home',
-    target: { pos: { x: 20, y: 0 }, radius: 2 },
-    bounds: { minX: -100, maxX: 100, minY: -100, maxY: 100 },
+    course: [
+      { x: 0, y: 0 },
+      { x: 20, y: 0 },
+      { x: 20, y: 10 },
+      { x: 0, y: 10 },
+    ],
+    target: { pos: { x: 12, y: 5 }, radius: 0.05 },
   })
-  const aim: Aim = { angle: 0, power: 1 }
-  const result = simulate(level, aim)
+  const result = simulate(level, { x: 5, y: 5 }, { angle: 0, power: 0.6 })
   assert.equal(result.outcome, 'goal')
+  assert.ok(result.closest < 0.05, `closest was ${result.closest}`)
 })
 
-test('simulate: aimed straight at a planet in the way returns crash with that body id', () => {
-  const home = makeBody({ id: 'home', mu: 0, radius: 1, pos: { x: 0, y: 0 } })
-  const blocker = makeBody({ id: 'blocker', mu: 0, radius: 1.5, pos: { x: 8, y: 0 } })
+test('a putt crossing the cup faster than CAPTURE_SPEED skips over (not a goal at that moment)', () => {
   const level = makeLevel({
-    bodies: [home, blocker],
-    homeId: 'home',
-    target: { pos: { x: 20, y: 0 }, radius: 1 },
-    bounds: { minX: -100, maxX: 100, minY: -100, maxY: 100 },
+    course: [
+      { x: 0, y: 0 },
+      { x: 200, y: 0 },
+      { x: 200, y: 10 },
+      { x: 0, y: 10 },
+    ],
+    target: { pos: { x: 15, y: 5 }, radius: 1 },
+    maxSpeed: 12,
   })
-  const aim: Aim = { angle: 0, power: 1 }
-  const result = simulate(level, aim)
-  assert.equal(result.outcome, 'crash')
-  assert.equal(result.crashedInto, 'blocker')
+  const s = launchState(level, { x: 5, y: 5 }, { angle: 0, power: 1 })
+  let sawCloseWhileFast = false
+  for (let i = 0; i < 500; i++) {
+    const outcome = checkOutcome(level, s)
+    if (outcome.targetDistance <= level.target.radius) {
+      const speed = Math.hypot(s.vel.x, s.vel.y)
+      if (speed > CAPTURE_SPEED) {
+        sawCloseWhileFast = true
+        assert.notEqual(outcome.outcome, 'goal')
+      }
+    }
+    if (outcome.outcome) break
+    step(level, s)
+  }
+  assert.ok(sawCloseWhileFast, 'test setup did not reach the cup while still fast')
 })
 
-test('simulate: aimed away from everything returns lost', () => {
-  const home = makeBody({ id: 'home', mu: 0, radius: 1, pos: { x: 0, y: 0 } })
-  const level = makeLevel({
-    bodies: [home],
-    homeId: 'home',
-    target: { pos: { x: 20, y: 0 }, radius: 1 },
-    bounds: { minX: -5, maxX: 5, minY: -5, maxY: 5 },
-  })
-  const aim: Aim = { angle: Math.PI, power: 1 }
-  const result = simulate(level, aim)
-  assert.equal(result.outcome, 'lost')
+// ---------------------------------------------------------------------------
+// Hazards
+// ---------------------------------------------------------------------------
+
+test('a putt into a planet ends hazard with that body id', () => {
+  const planet = bodyFixture({ id: 'planet-x', pos: { x: 60, y: 20 }, mu: 5, radius: 2 })
+  const level = makeLevel({ bodies: [planet], target: { pos: { x: -1000, y: -1000 }, radius: 0.01 } })
+  const result = simulate(level, { x: 50, y: 20 }, { angle: 0, power: 1 })
+  assert.equal(result.outcome, 'hazard')
+  assert.equal(result.hazardId, 'planet-x')
 })
 
-test('simulate: a low power probe falls back onto the home planet returns crash into home', () => {
-  const home = makeBody({ id: 'home', mu: 2000, radius: 1, pos: { x: 0, y: 0 } })
-  const level = makeLevel({
-    bodies: [home],
-    homeId: 'home',
-    target: { pos: { x: 50, y: 50 }, radius: 1 },
-    bounds: { minX: -1000, maxX: 1000, minY: -1000, maxY: 1000 },
-    maxSpeed: 10,
-    maxTime: 60,
-  })
-  const aim: Aim = { angle: 0, power: MIN_POWER }
-  const result = simulate(level, aim)
-  assert.equal(result.outcome, 'crash')
-  assert.equal(result.crashedInto, 'home')
+test('an asteroid (mu 0) is a hazard but adds no acceleration', () => {
+  const asteroid = bodyFixture({ id: 'ast-1', kind: 'asteroid', mu: 0, pos: { x: 5, y: 5 }, radius: 1 })
+  const level = makeLevel({ bodies: [asteroid] })
+  const out: Vec2 = { x: 0, y: 0 }
+  acceleration(level, 0, 0, 0, out)
+  assert.equal(out.x, 0)
+  assert.equal(out.y, 0)
+
+  const s: BallState = { pos: { x: 3, y: 5 }, vel: { x: 1, y: 0 }, t: 0, bounces: 0, lastBounceSpeed: 0 }
+  const outcome = checkOutcome(level, s)
+  // Not yet within the hazard radius, so not yet a hazard.
+  assert.equal(outcome.outcome, null)
+  s.pos.x = 5.5
+  const outcome2 = checkOutcome(level, s)
+  assert.equal(outcome2.outcome, 'hazard')
+  assert.equal(outcome2.hazardId, 'ast-1')
 })
 
-test('simulate: a bound orbit that never ends returns timeout at maxTime', () => {
-  const mu = 400
-  const r = 10
-  const central = makeBody({ id: 'star', mu, radius: 0.2, pos: { x: 0, y: 0 } })
-  // Home sits on the orbit circle; aiming tangentially (perpendicular to the radius vector)
-  // launches the probe into a roughly circular orbit around the star.
-  const home = makeBody({ id: 'home', mu: 0, radius: 0.3, pos: { x: r, y: 0 } })
-  const speed = Math.sqrt(mu / r)
-  const level = makeLevel({
-    bodies: [central, home],
-    homeId: 'home',
-    target: { pos: { x: 1000, y: 1000 }, radius: 1 },
-    bounds: { minX: -1000, maxX: 1000, minY: -1000, maxY: 1000 },
-    maxSpeed: speed,
-    maxTime: 0.5,
-  })
-  // Aim perpendicular to the home->star radius so the launch velocity is tangential.
-  const aim: Aim = { angle: Math.PI / 2, power: 1 }
-  const result = simulate(level, aim)
-  assert.equal(result.outcome, 'timeout')
-  // simulate only checks the outcome between whole steps, so time lands at maxTime plus at
-  // most one DT of overshoot rather than exactly at maxTime.
-  assert.ok(result.time >= level.maxTime)
-  assert.ok(result.time < level.maxTime + DT + 1e-9)
+test('a moon on a rail is only a hazard when it is actually there at that time', () => {
+  const rail: Rail = { center: { x: 60, y: 20 }, radius: 10, period: 20, phase: 0 }
+  const moon = bodyFixture({ id: 'moon-1', kind: 'moon', mu: 0, radius: 2, pos: { x: 0, y: 0 }, rail })
+  const level = makeLevel({ bodies: [moon] })
+  // At t=0 the moon sits at (70, 20) (center + radius on the phase=0 direction).
+  const sAt = { pos: { x: 70, y: 20 }, vel: { x: 0, y: 0 }, t: 0, bounces: 0, lastBounceSpeed: 0 }
+  assert.equal(checkOutcome(level, sAt).outcome, 'hazard')
+  // At the same spatial point but a different time, the moon has moved away.
+  const sAway = { pos: { x: 70, y: 20 }, vel: { x: 0, y: 0 }, t: 5, bounces: 0, lastBounceSpeed: 0 }
+  assert.notEqual(checkOutcome(level, sAway).outcome, 'hazard')
 })
 
-test('simulate is deterministic for the same aim', () => {
-  const home = makeBody({ id: 'home', mu: 50, radius: 1, pos: { x: 0, y: 0 } })
-  const blocker = makeBody({ id: 'blocker', mu: 10, radius: 1, pos: { x: 15, y: 5 } })
-  const level = makeLevel({
-    bodies: [home, blocker],
-    homeId: 'home',
-    target: { pos: { x: 20, y: 0 }, radius: 1 },
-    bounds: { minX: -100, maxX: 100, minY: -100, maxY: 100 },
+// ---------------------------------------------------------------------------
+// Gravity bends the putt
+// ---------------------------------------------------------------------------
+
+test('gravity from a nearby planet displaces the resting point toward it', () => {
+  const from = { x: 5, y: 20 }
+  const aim: Aim = { angle: 0, power: 0.5 }
+  const withoutPlanet = makeLevel({ target: { pos: { x: -1000, y: -1000 }, radius: 0.01 } })
+  const planet = bodyFixture({ id: 'p1', pos: { x: 20, y: 26 }, mu: 8, radius: 1 })
+  const withPlanet = makeLevel({
+    bodies: [planet],
+    target: { pos: { x: -1000, y: -1000 }, radius: 0.01 },
   })
-  const aim: Aim = { angle: 0.3, power: 0.7 }
-  const r1 = simulate(level, aim)
-  const r2 = simulate(level, aim)
+
+  const r1 = simulate(withoutPlanet, from, aim)
+  const r2 = simulate(withPlanet, from, aim)
+  assert.equal(r1.outcome, 'rest')
+  // Displacement toward the planet means a higher y (planet is above the line at y=20).
+  assert.ok(r2.end.y > r1.end.y, `expected displacement toward the planet: ${r2.end.y} vs ${r1.end.y}`)
+})
+
+test('a stationary ball near a heavy body (|accel| > ROLL_DECEL) is not at rest and ends hazard', () => {
+  const heavy = bodyFixture({ id: 'heavy', mu: 50, radius: 1, pos: { x: 10, y: 10 } })
+  const level = makeLevel({ bodies: [heavy], target: { pos: { x: -1000, y: -1000 }, radius: 0.01 } })
+  const probe: Vec2 = { x: 0, y: 0 }
+  acceleration(level, 11.5, 10, 0, probe)
+  assert.ok(Math.hypot(probe.x, probe.y) > ROLL_DECEL, 'fixture check: acceleration should exceed ROLL_DECEL')
+
+  const s: BallState = { pos: { x: 11.5, y: 10 }, vel: { x: 0, y: 0 }, t: 0, bounces: 0, lastBounceSpeed: 0 }
+  const immediate = checkOutcome(level, s)
+  assert.notEqual(immediate.outcome, 'rest')
+
+  // Roll it forward until it actually reaches the body.
+  let outcome = immediate
+  for (let i = 0; i < 2000 && !outcome.outcome; i++) {
+    step(level, s)
+    outcome = checkOutcome(level, s)
+  }
+  assert.equal(outcome.outcome, 'hazard')
+  assert.equal(outcome.hazardId, 'heavy')
+})
+
+test('a stationary ball far from any body (|accel| <= ROLL_DECEL) reports rest immediately', () => {
+  const heavy = bodyFixture({ id: 'heavy', mu: 50, radius: 1, pos: { x: 10, y: 10 } })
+  const level = makeLevel({ bodies: [heavy], target: { pos: { x: -1000, y: -1000 }, radius: 0.01 } })
+  const probe: Vec2 = { x: 0, y: 0 }
+  acceleration(level, 80, 20, 0, probe)
+  assert.ok(Math.hypot(probe.x, probe.y) <= ROLL_DECEL, 'fixture check: acceleration should be small far away')
+
+  const s: BallState = { pos: { x: 80, y: 20 }, vel: { x: 0, y: 0 }, t: 0, bounces: 0, lastBounceSpeed: 0 }
+  const outcome = checkOutcome(level, s)
+  assert.equal(outcome.outcome, 'rest')
+})
+
+// ---------------------------------------------------------------------------
+// Determinism
+// ---------------------------------------------------------------------------
+
+test('the same shot simulated twice gives identical time, end, and bounces', () => {
+  const planet = bodyFixture({ id: 'p1', pos: { x: 60, y: 22 }, mu: 6, radius: 1.5 })
+  const level = makeLevel({ bodies: [planet] })
+  const from = { x: 10, y: 15 }
+  const aim: Aim = { angle: 0.2, power: 0.8 }
+  const r1 = simulate(level, from, aim)
+  const r2 = simulate(level, from, aim)
   assert.equal(r1.time, r2.time)
-  assert.equal(r1.closest, r2.closest)
+  assert.deepEqual(r1.end, r2.end)
+  assert.equal(r1.bounces, r2.bounces)
   assert.equal(r1.outcome, r2.outcome)
-  assert.equal(r1.crashedInto, r2.crashedInto)
 })
 
-// ---------- predictPath ----------
+// ---------------------------------------------------------------------------
+// predictPath
+// ---------------------------------------------------------------------------
 
-test('predictPath returns an even-length array starting at the launch point', () => {
-  const home = makeBody({ id: 'home', mu: 0, radius: 1, pos: { x: 0, y: 0 } })
-  const level = makeLevel({
-    bodies: [home],
-    homeId: 'home',
-    target: { pos: { x: 1000, y: 1000 }, radius: 1 },
-    bounds: { minX: -1000, maxX: 1000, minY: -1000, maxY: 1000 },
-  })
-  const aim: Aim = { angle: 0.2, power: 0.5 }
-  const s0 = launchState(level, aim)
-  const path = predictPath(level, aim, 2)
+test('predictPath returns an even-length array starting at `from`', () => {
+  const level = makeLevel({ target: { pos: { x: -1000, y: -1000 }, radius: 0.01 } })
+  const from = { x: 50, y: 20 }
+  const path = predictPath(level, from, { angle: 0, power: 0.3 }, 1)
   assert.equal(path.length % 2, 0)
-  assert.ok(Math.abs(path[0] - s0.pos.x) < 1e-9)
-  assert.ok(Math.abs(path[1] - s0.pos.y) < 1e-9)
+  assert.equal(path[0], from.x)
+  assert.equal(path[1], from.y)
 })
 
-test('predictPath stops early when the path hits a body', () => {
-  const home = makeBody({ id: 'home', mu: 0, radius: 1, pos: { x: 0, y: 0 } })
-  const blocker = makeBody({ id: 'blocker', mu: 0, radius: 1.5, pos: { x: 8, y: 0 } })
-  const level = makeLevel({
-    bodies: [home, blocker],
-    homeId: 'home',
-    target: { pos: { x: 1000, y: 1000 }, radius: 1 },
-    bounds: { minX: -1000, maxX: 1000, minY: -1000, maxY: 1000 },
-  })
-  const aim: Aim = { angle: 0, power: 1 }
-  const pathHit = predictPath(level, aim, 10, 4)
-  const pathFull = predictPath(makeLevel({
-    bodies: [home],
-    homeId: 'home',
-    target: { pos: { x: 1000, y: 1000 }, radius: 1 },
-    bounds: { minX: -1000, maxX: 1000, minY: -1000, maxY: 1000 },
-  }), aim, 10, 4)
-  assert.ok(pathHit.length < pathFull.length)
-  assert.equal(pathHit.length % 2, 0)
+test('predictPath includes a direction change after a bounce', () => {
+  const level = makeLevel({ target: { pos: { x: -1000, y: -1000 }, radius: 0.01 } })
+  const from = { x: 90, y: 20 }
+  const path = predictPath(level, from, { angle: 0, power: 1 }, 2, 1)
+  // Find the max x reached, then confirm it decreases afterward (i.e. the ball reverses direction).
+  let maxX = -Infinity
+  let maxIdx = -1
+  for (let i = 0; i < path.length; i += 2) {
+    if (path[i] > maxX) {
+      maxX = path[i]
+      maxIdx = i
+    }
+  }
+  assert.ok(maxIdx >= 0 && maxIdx + 2 < path.length, 'no point after the peak to compare')
+  assert.ok(path[maxIdx + 2] < maxX, 'expected the path to move back after bouncing')
 })
 
-// ---------- defaultAim ----------
-
-test('defaultAim points from home to target', () => {
-  const home = makeBody({ id: 'home', mu: 0, radius: 1, pos: { x: 3, y: 4 } })
-  const level = makeLevel({
-    bodies: [home],
-    homeId: 'home',
-    target: { pos: { x: 13, y: 4 }, radius: 1 },
-  })
-  const aim = defaultAim(level)
-  assert.ok(Math.abs(aim.angle - 0) < 1e-9)
-
-  const home2 = makeBody({ id: 'home', mu: 0, radius: 1, pos: { x: 0, y: 0 } })
-  const level2 = makeLevel({
-    bodies: [home2],
-    homeId: 'home',
-    target: { pos: { x: 0, y: 10 }, radius: 1 },
-  })
-  const aim2 = defaultAim(level2)
-  assert.ok(Math.abs(aim2.angle - Math.PI / 2) < 1e-9)
+test('predictPath stops early at a hazard', () => {
+  const planet = bodyFixture({ id: 'p1', pos: { x: 60, y: 20 }, mu: 5, radius: 2 })
+  const level = makeLevel({ bodies: [planet], target: { pos: { x: -1000, y: -1000 }, radius: 0.01 } })
+  const from = { x: 50, y: 20 }
+  const path = predictPath(level, from, { angle: 0, power: 1 }, 5)
+  const lastX = path[path.length - 2]
+  const lastY = path[path.length - 1]
+  assert.ok(Math.hypot(lastX - planet.pos.x, lastY - planet.pos.y) <= planet.radius + BALL_RADIUS * 0.5 + 1e-6)
 })
 
-// ---------- checkOutcome with a moving body on a rail ----------
+// ---------------------------------------------------------------------------
+// defaultAim
+// ---------------------------------------------------------------------------
 
-test('checkOutcome reports a crash when the probe sits where the moon is at that t', () => {
-  const home = makeBody({ id: 'home', mu: 0, radius: 1, pos: { x: 0, y: 0 } })
-  const rail: Rail = { center: { x: 0, y: 0 }, radius: 10, period: 20, phase: 0 }
-  const moon = makeBody({ id: 'moon', mu: 0, radius: 1, pos: { x: 10, y: 0 }, rail })
-  const level = makeLevel({
-    bodies: [home, moon],
-    homeId: 'home',
-    target: { pos: { x: 1000, y: 1000 }, radius: 1 },
-    bounds: { minX: -1000, maxX: 1000, minY: -1000, maxY: 1000 },
-  })
-
-  const t0 = 5
-  const moonPosAtT0 = railPosition(rail, t0)
-  const probeAtMoon: ProbeState = { pos: { x: moonPosAtT0.x, y: moonPosAtT0.y }, vel: { x: 0, y: 0 }, t: t0 }
-  const hit = checkOutcome(level, probeAtMoon)
-  assert.equal(hit.outcome, 'crash')
-  assert.equal(hit.crashedInto, 'moon')
+test('defaultAim points from the given point at the cup with power 0.5', () => {
+  const level = makeLevel({ target: { pos: { x: 10, y: 30 }, radius: 1 } })
+  const from = { x: 10, y: 10 }
+  const aim = defaultAim(level, from)
+  assert.ok(Math.abs(aim.angle - Math.PI / 2) < 1e-9)
+  assert.equal(aim.power, 0.5)
 })
 
-test('checkOutcome does not crash into the moon when t differs and the moon has moved away', () => {
-  const home = makeBody({ id: 'home', mu: 0, radius: 1, pos: { x: 0, y: 0 } })
-  const rail: Rail = { center: { x: 0, y: 0 }, radius: 10, period: 20, phase: 0 }
-  const moon = makeBody({ id: 'moon', mu: 0, radius: 1, pos: { x: 10, y: 0 }, rail })
-  const level = makeLevel({
-    bodies: [home, moon],
-    homeId: 'home',
-    target: { pos: { x: 1000, y: 1000 }, radius: 1 },
-    bounds: { minX: -1000, maxX: 1000, minY: -1000, maxY: 1000 },
-  })
+// ---------------------------------------------------------------------------
+// MAX_SHOT_TIME
+// ---------------------------------------------------------------------------
 
-  const t0 = 5
-  const moonPosAtT0 = railPosition(rail, t0)
-  // Same position as the moon at t0, but a different t (moon is now at quarter-period away).
-  const probeElsewhere: ProbeState = { pos: { x: moonPosAtT0.x, y: moonPosAtT0.y }, vel: { x: 0, y: 0 }, t: t0 + 5 }
-  const result = checkOutcome(level, probeElsewhere)
-  assert.notEqual(result.crashedInto, 'moon')
+test('MAX_SHOT_TIME forces rest even while still moving', () => {
+  const level = makeLevel()
+  const s: BallState = {
+    pos: { x: 50, y: 20 },
+    vel: { x: 3, y: 0 },
+    t: MAX_SHOT_TIME,
+    bounces: 0,
+    lastBounceSpeed: 0,
+  }
+  const outcome = checkOutcome(level, s)
+  assert.equal(outcome.outcome, 'rest')
 })

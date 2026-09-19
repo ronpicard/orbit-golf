@@ -19,12 +19,18 @@ function makeLevel(id: string, par: number): Level {
     name: id,
     hint: '',
     par,
-    homeId: 'home',
+    tee: { x: -8, y: 0 },
+    course: [
+      { x: -10, y: -10 },
+      { x: 10, y: -10 },
+      { x: 10, y: 10 },
+      { x: -10, y: 10 },
+    ],
+    islands: [],
     bodies: [],
     target: { pos: { x: 0, y: 0 }, radius: 1 },
     bounds: { minX: -10, maxX: 10, minY: -10, maxY: 10 },
     maxSpeed: 10,
-    maxTime: 10,
   }
 }
 

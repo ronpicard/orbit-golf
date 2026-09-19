@@ -1,5 +1,7 @@
 import * as THREE from 'three'
 import { WELL_DEPTH_GLSL } from './sheet.ts'
+import { onFairway } from '../game/physics.ts'
+import type { Level } from '../game/types.ts'
 import {
   COLOR_AIM_HIGH,
   COLOR_AIM_LOW,
@@ -368,10 +370,66 @@ export function createRingMaterial(): THREE.ShaderMaterial {
 }
 
 /**
- * The fairway: a putt-putt green shaped like the level bounds (rounded corners, everything outside
- * discarded), pushed down into gravity funnels via the shared wellDepth() function.
+ * Rasterises `level.course` minus `level.islands` into a black/white CanvasTexture, white inside
+ * the fairway, with a softly blurred edge. `halfExtent`/`center` must match the well mesh's own
+ * plane geometry exactly (see buildWellMesh in Engine.ts) so the sampled mask lines up pixel-for-
+ * pixel with the sheet: row 0 (top) is the -Y edge, column 0 (left) is the -X edge, matching the
+ * `maskUv` computed in createWellMaterial's fragment shader.
  */
-export function createWellMaterial(): THREE.ShaderMaterial {
+export function createCourseMaskTexture(level: Level, halfExtent: THREE.Vector2, center: { x: number; y: number }): THREE.CanvasTexture {
+  const aspect = halfExtent.x / halfExtent.y
+  const long = 1024
+  const w = Math.max(2, Math.round(aspect >= 1 ? long : long * aspect))
+  const h = Math.max(2, Math.round(aspect >= 1 ? long / aspect : long))
+  const canvas = document.createElement('canvas')
+  canvas.width = w
+  canvas.height = h
+  const ctx = canvas.getContext('2d')
+  if (ctx) {
+    const img = ctx.createImageData(w, h)
+    for (let j = 0; j < h; j++) {
+      const v = j / (h - 1)
+      const gy = (1 - v * 2) * halfExtent.y
+      const py = center.y - gy
+      for (let i = 0; i < w; i++) {
+        const u = i / (w - 1)
+        const gx = (u * 2 - 1) * halfExtent.x
+        const px = center.x + gx
+        const inside = onFairway(level, { x: px, y: py })
+        const idx = (j * w + i) * 4
+        const val = inside ? 255 : 0
+        img.data[idx] = val
+        img.data[idx + 1] = val
+        img.data[idx + 2] = val
+        img.data[idx + 3] = 255
+      }
+    }
+    ctx.putImageData(img, 0, 0)
+  }
+  // Soften the edge with a small blur pass so the fairway boundary isn't a hard pixel step.
+  const blurred = document.createElement('canvas')
+  blurred.width = w
+  blurred.height = h
+  const bctx = blurred.getContext('2d')
+  if (bctx) {
+    bctx.filter = 'blur(3px)'
+    bctx.drawImage(canvas, 0, 0)
+  }
+  const texture = new THREE.CanvasTexture(bctx ? blurred : canvas)
+  texture.wrapS = THREE.ClampToEdgeWrapping
+  texture.wrapT = THREE.ClampToEdgeWrapping
+  texture.minFilter = THREE.LinearFilter
+  texture.magFilter = THREE.LinearFilter
+  texture.colorSpace = THREE.NoColorSpace
+  texture.needsUpdate = true
+  return texture
+}
+
+/**
+ * The fairway: shaped to the level's course polygon minus its islands via a rasterised mask
+ * texture (see createCourseMaskTexture), pushed down into gravity funnels via wellDepth().
+ */
+export function createWellMaterial(maskTexture: THREE.Texture): THREE.ShaderMaterial {
   return new THREE.ShaderMaterial({
     uniforms: {
       // xz = body position, y = mu.
@@ -379,7 +437,7 @@ export function createWellMaterial(): THREE.ShaderMaterial {
       uSoft: { value: new Float32Array(MAX_WELL_BODIES) },
       uCount: { value: 0 },
       uHalfExtent: { value: new THREE.Vector2(50, 50) },
-      uCornerRadius: { value: 1.2 },
+      uMask: { value: maskTexture },
       uCameraPos: { value: new THREE.Vector3() },
       uTime: { value: 0 },
     },
@@ -404,21 +462,21 @@ export function createWellMaterial(): THREE.ShaderMaterial {
       varying vec2 vGridXZ;
       varying float vDepth;
       uniform vec2 uHalfExtent;
-      uniform float uCornerRadius;
+      uniform sampler2D uMask;
       uniform vec3 uCameraPos;
       uniform float uTime;
       uniform vec3 uBodies[MAX_BODIES];
+      uniform float uSoft[MAX_BODIES];
       uniform int uCount;
 
-      float roundedBoxSDF(vec2 p, vec2 b, float r) {
-        vec2 q = abs(p) - b + r;
-        return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;
-      }
+      ${WELL_DEPTH_GLSL}
 
       void main() {
-        float sdf = roundedBoxSDF(vGridXZ, uHalfExtent, uCornerRadius);
-        float mask = 1.0 - smoothstep(-0.06, 0.06, sdf);
-        if (mask <= 0.001) discard;
+        // uMask is rasterised from the course polygon (minus islands) over exactly this plane's
+        // extent (see createCourseMaskTexture) - white inside the fairway, black outside.
+        vec2 maskUv = vec2((vGridXZ.x + uHalfExtent.x) / (2.0 * uHalfExtent.x), (uHalfExtent.y + vGridXZ.y) / (2.0 * uHalfExtent.y)); // CanvasTexture uploads flipped, so +y here
+        float mask = texture2D(uMask, maskUv).r;
+        if (mask <= 0.02) discard;
 
         vec2 g = abs(fract(vGridXZ - 0.5) - 0.5);
         vec2 fw = fwidth(vGridXZ);
@@ -432,6 +490,19 @@ export function createWellMaterial(): THREE.ShaderMaterial {
         float subLine = (1.0 - min(subAA.x, subAA.y)) * smoothstep(0.7, 1.5, vDepth) * 0.3;
         float line = max(mainLine, subLine);
 
+        // Analytic slope of the well: how steeply the sheet bends here, used to brighten grid lines
+        // on steep funnel walls and to tint the far wall so the 3D shape reads from a low camera.
+        float eps = 0.18;
+        float dDdx = wellDepth(vGridXZ + vec2(eps, 0.0)) - wellDepth(vGridXZ - vec2(eps, 0.0));
+        float dDdy = wellDepth(vGridXZ + vec2(0.0, eps)) - wellDepth(vGridXZ - vec2(0.0, eps));
+        vec2 gradient = vec2(dDdx, dDdy) / (2.0 * eps);
+        float slope = length(gradient);
+        float slopeBoost = smoothstep(0.15, 1.4, slope);
+        // The far wall is where the depth gradient (uphill direction, into the well) points away
+        // from the camera: that face falls into shadow, which sells the funnel's depth.
+        vec2 toFrag = normalize(vGridXZ - uCameraPos.xz + vec2(0.0001));
+        float farWall = smoothstep(0.05, 0.6, dot(normalize(gradient + vec2(0.0001)), toFrag)) * smoothstep(0.1, 1.0, slope);
+
         float depthN = clamp(vDepth / 2.4, 0.0, 1.0);
 
         // Turf fill: emerald/teal on the flats, mowing stripes every 2 units along x, darkening to indigo.
@@ -441,6 +512,8 @@ export function createWellMaterial(): THREE.ShaderMaterial {
         float stripe = step(1.0, mod(floor(vGridXZ.x / 2.0), 2.0)) * 0.08;
         vec3 turf = mix(low, high, 0.5) + stripe;
         turf = mix(turf, deep, depthN);
+        // Shadowed far wall: darken and cool the turf so the funnel's far side reads as receding.
+        turf = mix(turf, turf * 0.35, farWall * 0.7);
 
         // Grid line colour: mint on the flats, through hot pink, to orange in deep wells.
         vec3 mint = ${glslColor(COLOR_GRID_FLAT)};
@@ -460,8 +533,10 @@ export function createWellMaterial(): THREE.ShaderMaterial {
         pulse = clamp(pulse, 0.0, 1.0);
 
         float camFade = 1.0 - smoothstep(40.0, 90.0, length(uCameraPos.xz - vGridXZ));
-        float fillAlpha = 0.30 * mask;
-        float lineAlpha = line * mask * (0.35 + 0.55 * depthN + 0.3 * pulse) * camFade;
+        // Nearly opaque turf: background scenery must never show through the fairway.
+        float fillAlpha = 0.93 * mask;
+        float lineAlpha = line * mask * (0.35 + 0.55 * depthN + 0.3 * pulse + 0.6 * slopeBoost) * camFade;
+        lineColor = mix(lineColor, vec3(1.0), slopeBoost * 0.35);
 
         vec3 color = mix(turf, lineColor, lineAlpha);
         float alpha = max(fillAlpha, lineAlpha);
@@ -481,24 +556,37 @@ export function createBumperMaterial(): THREE.ShaderMaterial {
       uTime: { value: 0 },
       uColorA: { value: new THREE.Color(COLOR_BUMPER_A) },
       uColorB: { value: new THREE.Color(COLOR_BUMPER_B) },
+      // A single shared material covers every wall segment, so one bounce flash lights up
+      // whichever wall it happened near: uFlashAge counts up from 0 at the moment of a hit.
+      uFlashPos: { value: new THREE.Vector3(1e6, 1e6, 1e6) },
+      uFlashAge: { value: 999 },
     },
     vertexShader: `
       varying vec2 vUv;
+      varying vec3 vWorldPos;
       void main() {
         vUv = uv;
-        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        vec4 world = modelMatrix * vec4(position, 1.0);
+        vWorldPos = world.xyz;
+        gl_Position = projectionMatrix * viewMatrix * world;
       }
     `,
     fragmentShader: `
       varying vec2 vUv;
+      varying vec3 vWorldPos;
       uniform float uTime;
       uniform vec3 uColorA;
       uniform vec3 uColorB;
+      uniform vec3 uFlashPos;
+      uniform float uFlashAge;
       void main() {
         float seg = step(0.5, fract(vUv.x * 10.0 - uTime * 0.35));
         vec3 col = mix(uColorA, uColorB, seg);
         float shade = 0.6 + 0.4 * sin(vUv.y * 3.14159);
-        gl_FragColor = vec4(col * shade * 1.3, 1.0);
+        vec3 lit = col * shade * 1.3;
+        float flash = exp(-uFlashAge * 6.0) * smoothstep(1.6, 0.0, distance(vWorldPos, uFlashPos));
+        lit += flash * vec3(1.0, 1.0, 1.0) * 1.5;
+        gl_FragColor = vec4(lit, 1.0);
       }
     `,
   })
@@ -776,6 +864,35 @@ export function createAimRibbonMaterial(): THREE.ShaderMaterial {
         float edge = smoothstep(0.0, 0.12, vUv.y) * (1.0 - smoothstep(0.88, 1.0, vUv.y));
         float alpha = edge * (0.35 + 0.65 * shape);
         gl_FragColor = vec4(col, alpha);
+      }
+    `,
+    transparent: true,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+  })
+}
+
+/** Smooth tapered glowing curve under the prediction dots, brightest near the tee and fading out. */
+export function createPredictionCurveMaterial(): THREE.ShaderMaterial {
+  return new THREE.ShaderMaterial({
+    uniforms: { uTime: { value: 0 } },
+    vertexShader: `
+      varying vec2 vUv;
+      void main() {
+        vUv = uv;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: `
+      varying vec2 vUv;
+      uniform float uTime;
+      void main() {
+        vec3 col = ${glslColor(COLOR_AIM_MID)};
+        float edge = smoothstep(0.0, 0.3, vUv.y) * (1.0 - smoothstep(0.7, 1.0, vUv.y));
+        float flow = 0.6 + 0.4 * sin(vUv.x * 18.0 - uTime * 3.0);
+        float fade = 1.0 - smoothstep(0.55, 1.0, vUv.x);
+        gl_FragColor = vec4(col, edge * fade * flow * 0.55);
       }
     `,
     transparent: true,

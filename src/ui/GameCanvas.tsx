@@ -28,7 +28,9 @@ export default function GameCanvas({ events, onReady }: GameCanvasProps) {
     const stableEvents: EngineEvents = {
       onAimChange: (aim, dragging) => eventsRef.current.onAimChange(aim, dragging),
       onLaunch: (aim) => eventsRef.current.onLaunch(aim),
+      onBounce: (speed) => eventsRef.current.onBounce(speed),
       onResult: (result) => eventsRef.current.onResult(result),
+      onLieChange: (lie) => eventsRef.current.onLieChange(lie),
       onTap: (pos) => eventsRef.current.onTap(pos),
     }
 

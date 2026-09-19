@@ -1,16 +1,17 @@
 import { useEffect, useRef, useState } from 'react'
 import { createAudio } from './audio.ts'
 import type { GameAudio } from './audio.ts'
-import { bodyPosition, clampAim, defaultAim, homeBody, targetPosition } from './game/physics.ts'
+import { clampAim, defaultAim, onFairway, targetPosition } from './game/physics.ts'
 import { LEVELS, SANDBOX_LEVEL, makeSandboxBody } from './game/levels.ts'
 import type { SandboxSize } from './game/levels.ts'
 import { isUnlocked, loadProgress, recordResult, saveProgress, totalScore } from './game/progress.ts'
 import type { Progress } from './game/progress.ts'
-import type { Aim, Level, SimResult, Vec2 } from './game/types.ts'
+import type { Aim, Level, ShotResult, Vec2 } from './game/types.ts'
 import type { EngineApi, EngineEvents } from './render/engineApi.ts'
 import GameCanvas from './ui/GameCanvas.tsx'
 import Hud from './ui/Hud.tsx'
 import Menu from './ui/Menu.tsx'
+import Minimap from './ui/Minimap.tsx'
 import ResultCard from './ui/ResultCard.tsx'
 import type { ResultInfo } from './ui/ResultCard.tsx'
 import SandboxPalette from './ui/SandboxPalette.tsx'
@@ -27,6 +28,10 @@ interface Route {
 
 const MAX_SANDBOX_BODIES = 10
 const ERASE_RADIUS = 1.5
+const PLACEMENT_CLEARANCE = 1.5
+const STROKE_LIMIT = 10
+const NEAR_MISS_DISTANCE = 1.2
+const SANDBOX_GOAL_RESET_MS = 1200
 
 function parseHash(hash: string): Route {
   const levelMatch = /^#\/level\/(\d+)$/.exec(hash)
@@ -54,20 +59,29 @@ function firstPlayableLevelIndex(progress: Progress): number {
   return 0
 }
 
-function crashMessage(crashedInto: string | null, level: Level): string {
-  const body = level.bodies.find((b) => b.id === crashedInto)
-  if (!body) return 'Crashed'
-  if (body.kind === 'blackhole') return 'Swallowed by the black hole'
-  if (body.kind === 'moon') return 'Crashed into a moon'
-  if (body.kind === 'asteroid') return 'Crashed into an asteroid'
-  return 'Crashed into a planet'
+/** Wording for a lost stroke, based on what the ball touched (or left the course entirely). */
+function hazardMessage(hazardId: string | null, level: Level): string {
+  if (hazardId === null) return 'Out of bounds - replay the stroke'
+  const body = level.bodies.find((b) => b.id === hazardId)
+  if (!body) return 'Out of bounds - replay the stroke'
+  switch (body.kind) {
+    case 'planet':
+      return 'Burned up on a planet - replay the stroke'
+    case 'moon':
+      return 'Hit a moon - replay the stroke'
+    case 'asteroid':
+      return 'Smacked an asteroid - replay the stroke'
+    case 'blackhole':
+      return 'Swallowed by the black hole - replay the stroke'
+  }
 }
 
-function outcomeToast(result: SimResult, level: Level): string {
-  if (result.outcome === 'crash') return crashMessage(result.crashedInto, level)
-  if (result.outcome === 'lost') return `Lost in deep space — missed the gate by ${result.closest.toFixed(1)}`
-  if (result.outcome === 'timeout') return `Out of power — missed the gate by ${result.closest.toFixed(1)}`
-  return ''
+/** Wording for a stroke that rolled to a stop short of the cup. */
+function restMessage(result: ShotResult, level: Level): string {
+  if (result.closest <= NEAR_MISS_DISTANCE) return 'So close!'
+  const cup = targetPosition(level.target, 0)
+  const distance = Math.hypot(cup.x - result.end.x, cup.y - result.end.y)
+  return `${distance.toFixed(1)} to the hole`
 }
 
 export default function App() {
@@ -89,9 +103,10 @@ export default function App() {
   const [sandboxTool, setSandboxTool] = useState<SandboxTool>('small')
 
   const [engine, setEngine] = useState<EngineApi | null>(null)
-  const [aim, setAim] = useState<Aim>(() => defaultAim(LEVELS[0]))
+  const [aim, setAim] = useState<Aim>(() => defaultAim(LEVELS[0], LEVELS[0].tee))
+  const [lie, setLie] = useState<Vec2>(() => LEVELS[0].tee)
   const [isFlying, setIsFlying] = useState(false)
-  const [launchCount, setLaunchCount] = useState(0)
+  const [strokes, setStrokes] = useState(0)
   const [muted, setMuted] = useState<boolean>(() => loadMuted(storage))
   const [coached, setCoached] = useState<boolean>(() => loadCoached(storage))
   const [resultInfo, setResultInfo] = useState<ResultInfo | null>(null)
@@ -101,6 +116,14 @@ export default function App() {
   const toastTimerRef = useRef<number | undefined>(undefined)
   const toastIdRef = useRef(0)
   const unlockedAudioRef = useRef(false)
+  const launchWhooshTimerRef = useRef<number | undefined>(undefined)
+
+  function clearLaunchWhooshTimer() {
+    if (launchWhooshTimerRef.current !== undefined) {
+      window.clearTimeout(launchWhooshTimerRef.current)
+      launchWhooshTimerRef.current = undefined
+    }
+  }
 
   useEffect(() => {
     progressRef.current = progress
@@ -115,21 +138,25 @@ export default function App() {
   const currentLevel: Level = mode === 'level' ? LEVELS[levelIndex] : mode === 'sandbox' ? sandboxLevel : LEVELS[0]
 
   // Load the level whenever the screen or level index changes (not on sandbox body edits, which
-  // are applied directly with keepTrails so the trail history survives).
+  // are applied directly with keepTrails so the trail history survives). The engine emits the
+  // tee as the new lie and its own default aim once the level is loaded.
   useEffect(() => {
     if (!engine) return
+    clearLaunchWhooshTimer()
     const level = mode === 'level' ? LEVELS[levelIndex] : mode === 'sandbox' ? sandboxLevel : LEVELS[0]
     engine.loadLevel(level)
-    const nextAim = defaultAim(level)
-    engine.setAim(nextAim)
-    setAim(nextAim)
     setIsFlying(false)
     setResultInfo(null)
     if (mode === 'level') {
-      setLaunchCount(0)
+      setStrokes(0)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode, levelIndex, engine])
+
+  // Cancel any pending delayed launch whoosh on unmount.
+  useEffect(() => {
+    return () => clearLaunchWhooshTimer()
+  }, [])
 
   // Keep location.hash in sync with the current screen.
   useEffect(() => {
@@ -188,10 +215,7 @@ export default function App() {
     if (!engine) return
     const level = mode === 'sandbox' ? sandboxLevel : LEVELS[levelIndex]
     engine.loadLevel(level)
-    const nextAim = defaultAim(level)
-    engine.setAim(nextAim)
-    setAim(nextAim)
-    setLaunchCount(0)
+    setStrokes(0)
     setIsFlying(false)
     setResultInfo(null)
   }
@@ -213,7 +237,6 @@ export default function App() {
       let nearestIndex = -1
       let nearestDistance = Infinity
       level.bodies.forEach((b, i) => {
-        if (b.id === level.homeId) return
         const d = Math.hypot(b.pos.x - pos.x, b.pos.y - pos.y)
         if (d < nearestDistance) {
           nearestDistance = d
@@ -228,27 +251,27 @@ export default function App() {
       return
     }
 
-    const placedCount = level.bodies.filter((b) => b.id !== level.homeId).length
-    if (placedCount >= MAX_SANDBOX_BODIES) {
+    if (level.bodies.length >= MAX_SANDBOX_BODIES) {
       showToast('Sandbox is full')
       return
     }
 
+    if (!onFairway(level, pos)) {
+      showToast('Cannot place here')
+      return
+    }
+
     const size: SandboxSize = sandboxTool
-    const candidate = makeSandboxBody(pos, size, placedCount)
-    const home = homeBody(level)
-    const homePos = bodyPosition(home, 0)
-    const targetPos = targetPosition(level.target, 0)
+    const candidate = makeSandboxBody(pos, size, level.bodies.length)
+    const cup = targetPosition(level.target, 0)
 
-    const overlapsHome = Math.hypot(homePos.x - candidate.pos.x, homePos.y - candidate.pos.y) < home.radius + candidate.radius
-    const overlapsTarget =
-      Math.hypot(targetPos.x - candidate.pos.x, targetPos.y - candidate.pos.y) < level.target.radius + candidate.radius
-    const overlapsBody = level.bodies.some((b) => {
-      if (b.id === level.homeId) return false
-      return Math.hypot(b.pos.x - candidate.pos.x, b.pos.y - candidate.pos.y) < b.radius + candidate.radius
-    })
+    const tooCloseToLie = Math.hypot(lie.x - pos.x, lie.y - pos.y) < PLACEMENT_CLEARANCE
+    const tooCloseToCup = Math.hypot(cup.x - pos.x, cup.y - pos.y) < PLACEMENT_CLEARANCE
+    const overlapsBody = level.bodies.some(
+      (b) => Math.hypot(b.pos.x - candidate.pos.x, b.pos.y - candidate.pos.y) < b.radius + candidate.radius,
+    )
 
-    if (overlapsHome || overlapsTarget || overlapsBody) {
+    if (tooCloseToLie || tooCloseToCup || overlapsBody) {
       showToast('Cannot place here')
       return
     }
@@ -256,12 +279,23 @@ export default function App() {
     applySandboxLevel({ ...level, bodies: [...level.bodies, candidate] })
   }
 
-  function handleResult(result: SimResult) {
-    setIsFlying(false)
+  function handleResult(result: ShotResult) {
+    // After a miss the engine is still moving the golfer to the ball; onLieChange ends the shot.
+    if (result.outcome === 'goal') setIsFlying(false)
 
     if (mode === 'sandbox') {
-      if (result.outcome === 'goal') showToast('Gate reached')
-      else showToast(outcomeToast(result, sandboxLevel))
+      if (result.outcome === 'goal') {
+        audio.cupDrop()
+        audio.cheer()
+        showToast('Hole in!')
+        window.setTimeout(() => {
+          engine?.loadLevel(sandboxLevel)
+        }, SANDBOX_GOAL_RESET_MS)
+      } else if (result.outcome === 'hazard') {
+        audio.crash()
+        audio.groan()
+        showToast(hazardMessage(result.hazardId, sandboxLevel))
+      }
       return
     }
 
@@ -269,42 +303,81 @@ export default function App() {
     const level = LEVELS[levelIndex]
 
     if (result.outcome === 'goal') {
-      const strokes = launchCount
+      const finalStrokes = strokes
       const previousBest = progress.best[level.id]
-      const nextProgress = recordResult(progress, level.id, strokes)
+      const nextProgress = recordResult(progress, level.id, finalStrokes)
       setProgress(nextProgress)
       saveProgress(nextProgress, storage)
+      audio.cupDrop()
       audio.goal()
+      audio.cheer()
       const total = totalScore(nextProgress, LEVELS)
       setResultInfo({
         levelIndex,
         levelName: level.name,
         par: level.par,
-        strokes,
-        isNewBest: previousBest === undefined || strokes < previousBest,
+        strokes: finalStrokes,
+        isNewBest: previousBest === undefined || finalStrokes < previousBest,
         totalStrokes: total.strokes,
         totalPar: total.par,
         totalCompleted: total.completed,
+        pickedUp: false,
       })
+      return
+    }
+
+    if (strokes >= STROKE_LIMIT) {
+      const nextProgress = recordResult(progress, level.id, STROKE_LIMIT)
+      setProgress(nextProgress)
+      saveProgress(nextProgress, storage)
+      const total = totalScore(nextProgress, LEVELS)
+      setResultInfo({
+        levelIndex,
+        levelName: level.name,
+        par: level.par,
+        strokes: STROKE_LIMIT,
+        isNewBest: false,
+        totalStrokes: total.strokes,
+        totalPar: total.par,
+        totalCompleted: total.completed,
+        pickedUp: true,
+      })
+      return
+    }
+
+    if (result.outcome === 'hazard') {
+      audio.crash()
+      audio.groan()
+      showToast(hazardMessage(result.hazardId, level))
     } else {
-      if (result.outcome === 'crash') audio.crash()
-      else audio.lost()
-      showToast(outcomeToast(result, level))
+      if (result.closest <= NEAR_MISS_DISTANCE) audio.groan()
+      showToast(restMessage(result, level))
     }
   }
 
   const events: EngineEvents = {
     onAimChange: (nextAim) => setAim(nextAim),
     onLaunch: (launchAim) => {
-      setLaunchCount((c) => c + 1)
+      setStrokes((c) => c + 1)
       setIsFlying(true)
-      audio.launch(launchAim.power)
+      audio.swing(launchAim.power)
+      clearLaunchWhooshTimer()
+      launchWhooshTimerRef.current = window.setTimeout(() => {
+        launchWhooshTimerRef.current = undefined
+        audio.launch(launchAim.power)
+      }, 320)
       if (!coached) {
         setCoached(true)
         saveCoached(storage)
       }
     },
+    onBounce: (speed) => audio.bounce(speed),
     onResult: handleResult,
+    onLieChange: (nextLie) => {
+      setIsFlying(false)
+      setLie(nextLie)
+      if (engine) setAim(engine.getAim())
+    },
     onTap: (pos) => {
       if (mode === 'sandbox') handleSandboxTap(pos)
     },
@@ -395,8 +468,10 @@ export default function App() {
         case 'Enter':
           e.preventDefault()
           if (engine) {
-            if (engine.isFlying()) engine.abort()
-            else engine.fire()
+            if (engine.isFlying()) {
+              engine.abort()
+              clearLaunchWhooshTimer()
+            } else engine.fire()
           }
           break
         case 'r':
@@ -426,18 +501,20 @@ export default function App() {
           <>
             <Hud
               engine={engine}
+              onAbort={clearLaunchWhooshTimer}
               audio={audio}
               level={currentLevel}
               levelNumber={mode === 'level' ? levelIndex + 1 : null}
               aim={aim}
               isFlying={isFlying}
-              launchCount={mode === 'level' ? launchCount : null}
+              strokes={mode === 'level' ? strokes : null}
               muted={muted}
               showCoachMark={mode === 'level' && levelIndex === 0 && !coached}
               onBack={goToMenu}
               onRestart={mode === 'level' ? restart : undefined}
               onToggleMute={toggleMute}
             />
+            <Minimap level={currentLevel} lie={lie} aim={aim} levelNumber={mode === 'level' ? levelIndex + 1 : null} />
             {mode === 'sandbox' && (
               <SandboxPalette
                 tool={sandboxTool}

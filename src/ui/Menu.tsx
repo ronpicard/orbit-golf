@@ -74,7 +74,7 @@ function NineSection({ title, levels, start, end, progress, currentIndex, onSele
         })}
       </div>
       <p className="scorecard-subtotal">
-        {sub.completed > 0 ? `${sub.strokes} launches / ${sub.par} par` : 'No holes completed yet'}
+        {sub.completed > 0 ? `${sub.strokes} strokes / ${sub.par} par` : 'No holes completed yet'}
       </p>
     </section>
   )
@@ -138,9 +138,10 @@ export default function Menu({ levels, progress, onPlay, onSelectLevel, onSandbo
         </div>
 
         <div className="how-to-play">
-          <p>Drag in the direction you want to shoot - the further you drag, the more power. Release to launch.</p>
-          <p>Gravity bends your shot, so plan around planets, moons, and black holes.</p>
-          <p>Reach the green portal in as few launches as possible.</p>
+          <p>Drag toward where you want to putt - drag further for more power, release to swing.</p>
+          <p>The ball bounces off walls and rolls to a stop. Play your next stroke from where it lies.</p>
+          <p>Planets and black holes bend your putt. Touch one and you replay the stroke.</p>
+          <p>Sink it in as few strokes as you can.</p>
         </div>
       </div>
     </div>

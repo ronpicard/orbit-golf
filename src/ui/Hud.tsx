@@ -70,12 +70,14 @@ function formatPower(power: number): string {
 
 interface HudProps {
   engine: EngineApi | null
+  /** Called after the ABORT button cancels a flight, so the app can cancel pending launch audio. */
+  onAbort: () => void
   audio: GameAudio
   level: Level
   levelNumber: number | null
   aim: Aim
   isFlying: boolean
-  launchCount: number | null
+  strokes: number | null
   muted: boolean
   showCoachMark: boolean
   onBack: () => void
@@ -91,12 +93,13 @@ function powerColorClass(power: number): string {
 
 export default function Hud({
   engine,
+  onAbort,
   audio,
   level,
   levelNumber,
   aim,
   isFlying,
-  launchCount,
+  strokes,
   muted,
   showCoachMark,
   onBack,
@@ -138,8 +141,10 @@ export default function Hud({
 
   function handleFire() {
     if (!engine) return
-    if (isFlying) engine.abort()
-    else engine.fire()
+    if (isFlying) {
+      engine.abort()
+      onAbort()
+    } else engine.fire()
   }
 
   const showHint = !launchedOnce && !autoHidden
@@ -152,9 +157,9 @@ export default function Hud({
         </button>
         <div className="top-bar-title">
           <span className="level-title">{levelNumber !== null ? `Hole ${levelNumber} - ${level.name}` : level.name}</span>
-          {launchCount !== null && (
+          {strokes !== null && (
             <span className="level-meta">
-              Par {level.par} &middot; Launches {launchCount}
+              Par {level.par} &middot; Strokes {strokes}
             </span>
           )}
         </div>
@@ -184,7 +189,7 @@ export default function Hud({
             <span className="coach-dot coach-dot-2" />
             <span className="coach-dot coach-dot-1" />
           </div>
-          <p className="coach-caption">Drag toward your target, release to launch</p>
+          <p className="coach-caption">Drag toward the hole, release to putt</p>
         </div>
       )}
 

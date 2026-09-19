@@ -5,16 +5,17 @@ import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js'
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js'
 
-import type { Aim, Body, Level, ProbeState, Rail, SimResult, Vec2 } from '../game/types.ts'
+import type { Aim, BallState, Body, Level, Outcome, Rail, ShotResult, Vec2 } from '../game/types.ts'
 import {
+  BALL_RADIUS,
   DT,
   MIN_POWER,
   bodyPosition,
   checkOutcome,
   clampAim,
   defaultAim,
-  homeBody,
   launchState,
+  onFairway,
   predictPath,
   step,
   targetPosition,
@@ -27,10 +28,10 @@ import {
   createAtmosphereMaterial,
   createBeamMaterial,
   createBumperMaterial,
+  createCourseMaskTexture,
   createCupDiscMaterial,
   createCupRingMaterial,
   createFlagMaterial,
-  createGateDiscMaterial,
   createGateRingMaterial,
   createGlowTexture,
   createLensedHaloMaterial,
@@ -39,6 +40,7 @@ import {
   createPhotonRingMaterial,
   createPlanetMaterial,
   createPostFxShader,
+  createPredictionCurveMaterial,
   createPredictionDotsMaterial,
   createRingMaterial,
   createStarfield,
@@ -49,20 +51,28 @@ import { wellDepthAt } from './sheet.ts'
 import { ActiveTrail, GhostTrailPool } from './trails.ts'
 import { ParticlePool } from './particles.ts'
 import { COLOR_TEE } from './palette.ts'
+import { ALIEN_BACKPACK_OFFSET, createAlienGolfer } from './alien.ts'
+import type { AlienGolfer } from './alien.ts'
+import { createBackdrop } from './backdrop.ts'
+import type { Backdrop } from './backdrop.ts'
+import { createCrowd } from './crowd.ts'
+import type { Crowd } from './crowd.ts'
 
-// --- Camera framing constants ------------------------------------------------------------------
+// --- Camera framing constants (first-person chase camera, behind the ball looking at the cup) ----
 const NDC_X_LIMIT = 0.9
-const NDC_Y_MAX_PORTRAIT = 0.74
-/** Landscape screens are short, so the hint pill reaches further down in NDC terms. */
-const NDC_Y_MAX_LANDSCAPE = 0.6
-const FOV = 50
-const ELEVATION = THREE.MathUtils.degToRad(30)
-/** Fixed heading: camera sits behind home on the -x side, looking toward +x. Same in both orientations. */
-const BASE_AZIMUTH = Math.PI
+const NDC_Y_MAX = 0.62
+const CHASE_BACK_LANDSCAPE = 11
+const CHASE_BACK_PORTRAIT = 14
+const CHASE_LOOKAHEAD = 5.5
+const CHASE_ELEVATION = THREE.MathUtils.degToRad(27)
+const CHASE_FOV_LANDSCAPE = 50
+const CHASE_FOV_PORTRAIT = 58
+const CHASE_PULLBACK_MAX = 1.6
+const CHASE_AHEAD_POINT = 9
+const CUP_NEAR_DIST = 2.5
+const LIE_GLIDE_DURATION = 0.9
+const CHASE_FOLLOW_LOOKAT_FRAC = 0.55
 const IDLE_SWAY = THREE.MathUtils.degToRad(0.4)
-const CAMERA_TAU = 1.2
-const CAMERA_FOLLOW_LOOKAT_FRAC = 0.3
-const CAMERA_DOLLY_FRAC = 0.08
 const CRASH_SHAKE_DURATION = 0.35
 const CRASH_SHAKE_MAX = 0.15
 
@@ -70,11 +80,25 @@ const DRAG_THRESHOLD_PX = 8
 const AIM_MIN_LENGTH = 1.2
 const AIM_MAX_LENGTH = 6
 const POWER_DRAG_DIVISOR = 0.34
-const POST_FLIGHT_HOLD = 0.6
 const RIBBON_SAMPLES = 12
 const RIBBON_HALF_WIDTH = 0.09
-const PREDICT_SECONDS = 1.4
+const PREDICT_SECONDS = 1.6
 const PREDICT_STRIDE = 4
+
+// --- Post-shot outcome sequencing durations -------------------------------------------------------
+const GOAL_SINK_DURATION = 0.35
+const REST_WAIT_DURATION = 0.5
+const REST_HOP_DURATION = 0.9
+const HAZARD_FX_DURATION = 0.5
+const HAZARD_BEAM_DURATION = 0.45
+/** A 'rest' outcome this close to the cup gets a small crowd groan. */
+const NEAR_MISS_DISTANCE = 1.2
+
+// --- Course wall constants -------------------------------------------------------------------------
+const WALL_THICK = 0.28
+const WALL_HEIGHT = 0.55
+const ISLAND_HEIGHT = 0.55
+const SKIRT_DROP = 1.0
 
 function clamp(v: number, lo: number, hi: number): number {
   return Math.min(hi, Math.max(lo, v))
@@ -93,6 +117,10 @@ function seededRandom(seed: number): () => number {
     s = (Math.imul(s, 1664525) + 1013904223) >>> 0
     return s / 4294967296
   }
+}
+
+function easeInOutCubic(t: number): number {
+  return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2
 }
 
 // --- Rail visuals: a faint circle showing a body/target's orbit, resting on the sheet -------------
@@ -137,16 +165,15 @@ function buildRailVisual(rail: Rail | undefined, color: number): RailVisual | nu
   }
 }
 
-// --- Body visual builders ------------------------------------------------------------------------
+// --- Body visual builders (hazards: planets, moons, black holes, asteroids) -----------------------
 
-/** One entry in the scene per Level.body, dispatched on `kind`. */
 interface BodyVisual {
   group: THREE.Group
   update(level: Level, t: number, dt: number, elapsed: number): void
   dispose(): void
 }
 
-interface GateVisual {
+interface CupVisual {
   group: THREE.Group
   update(level: Level, t: number, dt: number, elapsed: number, flash: number, proximity: number): void
   dispose(): void
@@ -161,7 +188,7 @@ interface VisualCtx {
   particlePool: ParticlePool
 }
 
-function buildPlanetVisual(body: Body, level: Level, _ctx: VisualCtx): BodyVisual {
+function buildPlanetVisual(body: Body, _ctx: VisualCtx): BodyVisual {
   const group = new THREE.Group()
   const isMoon = body.kind === 'moon'
 
@@ -188,41 +215,6 @@ function buildPlanetVisual(body: Body, level: Level, _ctx: VisualCtx): BodyVisua
     group.add(ring)
   }
 
-  // Tee box for the home planet: a glowing ring + a small pad on the green, sitting on the sheet.
-  let teeRingGeometry: THREE.RingGeometry | null = null
-  let teeRingMaterial: THREE.MeshBasicMaterial | null = null
-  let teePadGeometry: THREE.PlaneGeometry | null = null
-  let teePadMaterial: THREE.MeshBasicMaterial | null = null
-  const localSheetOffset = -body.radius * 0.6
-  if (body.id === level.homeId) {
-    teeRingGeometry = new THREE.RingGeometry(body.radius * 1.3, body.radius * 1.45, 48)
-    teeRingMaterial = new THREE.MeshBasicMaterial({
-      color: COLOR_TEE,
-      transparent: true,
-      opacity: 0.55,
-      side: THREE.DoubleSide,
-      blending: THREE.AdditiveBlending,
-      depthWrite: false,
-    })
-    const teeRing = new THREE.Mesh(teeRingGeometry, teeRingMaterial)
-    teeRing.rotation.x = -Math.PI / 2
-    teeRing.position.y = localSheetOffset + 0.02
-    group.add(teeRing)
-
-    teePadGeometry = new THREE.PlaneGeometry(body.radius * 1.9, body.radius * 1.9)
-    teePadMaterial = new THREE.MeshBasicMaterial({
-      color: COLOR_TEE,
-      transparent: true,
-      opacity: 0.14,
-      side: THREE.DoubleSide,
-      depthWrite: false,
-    })
-    const teePad = new THREE.Mesh(teePadGeometry, teePadMaterial)
-    teePad.rotation.x = -Math.PI / 2
-    teePad.position.y = localSheetOffset + 0.015
-    group.add(teePad)
-  }
-
   const rail = buildRailVisual(body.rail, 0x8899aa)
   if (rail) group.add(rail.line)
 
@@ -236,7 +228,6 @@ function buildPlanetVisual(body: Body, level: Level, _ctx: VisualCtx): BodyVisua
       group.position.set(p.x, -depth + sheetOffset, p.y)
       mesh.rotation.y += dt * 0.06
       if (!isMoon) material.uniforms.uTime.value = elapsed
-      if (teeRingMaterial) teeRingMaterial.opacity = 0.4 + 0.25 * Math.sin(elapsed * 2.2)
       rail?.update(lvl, t)
     },
     dispose() {
@@ -246,10 +237,6 @@ function buildPlanetVisual(body: Body, level: Level, _ctx: VisualCtx): BodyVisua
       atmMaterial?.dispose()
       ringGeometry?.dispose()
       ringMaterial?.dispose()
-      teeRingGeometry?.dispose()
-      teeRingMaterial?.dispose()
-      teePadGeometry?.dispose()
-      teePadMaterial?.dispose()
       rail?.dispose()
     },
   }
@@ -359,11 +346,11 @@ function buildAsteroidVisual(body: Body): BodyVisual {
   }
 }
 
-function buildBodyVisual(body: Body, level: Level, ctx: VisualCtx): BodyVisual {
+function buildBodyVisual(body: Body, ctx: VisualCtx): BodyVisual {
   switch (body.kind) {
     case 'planet':
     case 'moon':
-      return buildPlanetVisual(body, level, ctx)
+      return buildPlanetVisual(body, ctx)
     case 'blackhole':
       return buildBlackHoleVisual(body, ctx)
     case 'asteroid':
@@ -375,34 +362,80 @@ function buildBodyVisual(body: Body, level: Level, ctx: VisualCtx): BodyVisual {
   }
 }
 
-/** The upright golf-flag portal: standing energy ring, ground cup, pole and waving flag. */
-function buildGateVisual(level: Level, ctx: VisualCtx): GateVisual {
-  const group = new THREE.Group()
-  const radius = level.target.radius
-  const floatHeight = radius * 0.9
+/** The tee marker: a glowing ring + a small pad on the green, sitting on the sheet at level.tee. */
+interface TeeVisual {
+  group: THREE.Group
+  update(level: Level, t: number, elapsed: number): void
+  dispose(): void
+}
 
-  const ringGeometry = new THREE.TorusGeometry(radius * 0.85, 0.06, 12, 48)
-  const ringMaterial = createGateRingMaterial()
+function buildTeeVisual(level: Level): TeeVisual {
+  const group = new THREE.Group()
+  const r = 0.55
+
+  const ringGeometry = new THREE.RingGeometry(r * 1.3, r * 1.45, 48)
+  const ringMaterial = new THREE.MeshBasicMaterial({
+    color: COLOR_TEE,
+    transparent: true,
+    opacity: 0.55,
+    side: THREE.DoubleSide,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+  })
   const ring = new THREE.Mesh(ringGeometry, ringMaterial)
-  ring.rotation.y = Math.PI / 2
-  ring.position.y = floatHeight
+  ring.rotation.x = -Math.PI / 2
+  ring.position.y = 0.02
   group.add(ring)
 
-  const discGeometry = new THREE.CircleGeometry(radius * 0.78, 32)
-  const discMaterial = createGateDiscMaterial()
-  const disc = new THREE.Mesh(discGeometry, discMaterial)
-  disc.rotation.y = Math.PI / 2
-  disc.position.y = floatHeight
-  group.add(disc)
+  const padGeometry = new THREE.PlaneGeometry(r * 1.9, r * 1.9)
+  const padMaterial = new THREE.MeshBasicMaterial({
+    color: COLOR_TEE,
+    transparent: true,
+    opacity: 0.14,
+    side: THREE.DoubleSide,
+    depthWrite: false,
+  })
+  const pad = new THREE.Mesh(padGeometry, padMaterial)
+  pad.rotation.x = -Math.PI / 2
+  pad.position.y = 0.015
+  group.add(pad)
 
-  const beamHeight = 3.5
-  const beamGeometry = new THREE.CylinderGeometry(radius * 0.5, radius * 0.5, beamHeight, 24, 1, true)
+  return {
+    group,
+    update(lvl, t, elapsed) {
+      const depth = wellDepthAt(lvl, level.tee.x, level.tee.y, t)
+      group.position.set(level.tee.x, -depth, level.tee.y)
+      ringMaterial.opacity = 0.4 + 0.25 * Math.sin(elapsed * 2.2)
+    },
+    dispose() {
+      ringGeometry.dispose()
+      ringMaterial.dispose()
+      padGeometry.dispose()
+      padMaterial.dispose()
+    },
+  }
+}
+
+/** The cup: a recessed disc with a white rim, a swirling emerald glow, a flagstick and a faint beam. */
+function buildCupVisual(level: Level, ctx: VisualCtx): CupVisual {
+  const group = new THREE.Group()
+  const radius = level.target.radius
+
+  const glowGeometry = new THREE.CircleGeometry(radius * 0.6, 32)
+  const glowMaterial = createGateRingMaterial()
+  const glow = new THREE.Mesh(glowGeometry, glowMaterial)
+  glow.rotation.x = -Math.PI / 2
+  glow.position.y = 0.026
+  group.add(glow)
+
+  const beamHeight = 3.0
+  const beamGeometry = new THREE.CylinderGeometry(radius * 0.4, radius * 0.4, beamHeight, 20, 1, true)
   const beamMaterial = createBeamMaterial()
   const beam = new THREE.Mesh(beamGeometry, beamMaterial)
   beam.position.y = beamHeight / 2
   group.add(beam)
 
-  // Ground cup: reads like a golf hole - white rim, dark centre - showing the true capture radius.
+  // Ground cup: reads like a real golf hole - white rim, dark centre - showing the true capture radius.
   const cupRingGeometry = new THREE.RingGeometry(radius * 0.72, radius * 0.94, 48)
   const cupRingMaterial = createCupRingMaterial()
   const cupRing = new THREE.Mesh(cupRingGeometry, cupRingMaterial)
@@ -446,16 +479,15 @@ function buildGateVisual(level: Level, ctx: VisualCtx): GateVisual {
       const p = targetPosition(lvl.target, t)
       const depth = wellDepthAt(lvl, p.x, p.y, t)
       group.position.set(p.x, -depth, p.y)
-      ringMaterial.uniforms.uTime.value = elapsed
-      ringMaterial.uniforms.uFlash.value = flash
-      ringMaterial.uniforms.uProximity.value = proximity
-      discMaterial.uniforms.uTime.value = elapsed
+      glowMaterial.uniforms.uTime.value = elapsed
+      glowMaterial.uniforms.uFlash.value = flash
+      glowMaterial.uniforms.uProximity.value = proximity
       beamMaterial.uniforms.uTime.value = elapsed
       cupRingMaterial.uniforms.uTime.value = elapsed
       flagMaterial.uniforms.uTime.value = elapsed
       rail?.update(lvl, t)
 
-      // ~40 particles drawn gently into the portal.
+      // ~20 particles drawn gently into the cup.
       drawInTimer -= dt
       if (drawInTimer <= 0) {
         drawInTimer = 0.05
@@ -463,18 +495,16 @@ function buildGateVisual(level: Level, ctx: VisualCtx): GateVisual {
         const r = radius * (0.6 + Math.random() * 0.8)
         const sx = group.position.x + Math.cos(a) * r
         const sz = group.position.z + Math.sin(a) * r
-        const sy = group.position.y + Math.random() * floatHeight * 1.4
+        const sy = group.position.y + 0.3 + Math.random() * 1.0
         const vx = (group.position.x - sx) * 0.9
         const vz = (group.position.z - sz) * 0.9
-        const vy = (group.position.y + floatHeight - sy) * 0.9
+        const vy = (group.position.y + 0.05 - sy) * 0.9
         ctx.particlePool.spawn(sx, sy, sz, vx, vy, vz, new THREE.Color(0x6ee7b7), 0.08, 1.1)
       }
     },
     dispose() {
-      ringGeometry.dispose()
-      ringMaterial.dispose()
-      discGeometry.dispose()
-      discMaterial.dispose()
+      glowGeometry.dispose()
+      glowMaterial.dispose()
       beamGeometry.dispose()
       beamMaterial.dispose()
       cupRingGeometry.dispose()
@@ -494,94 +524,151 @@ interface WellVisual {
   mesh: THREE.Mesh
   material: THREE.ShaderMaterial
   geometry: THREE.PlaneGeometry
+  maskTexture: THREE.CanvasTexture
   center: Vec2
 }
 
 /**
- * The fairway ground sheet: a rounded-rectangle patch shaped to the level bounds, pushed down into
- * gravity funnels. Authored flat in XY then rotated -90 deg about X into XZ, so local (x, y) maps to
- * world (x, -depth, -y) relative to the mesh's own position; per-frame uniform updates below convert
- * each body's physics position into this local space: localX = worldX - centerX, localY = centerY - worldY.
+ * The fairway ground sheet: a patch masked to `level.course` minus `level.islands`, pushed down
+ * into gravity funnels. Authored flat in XY then rotated -90 deg about X into XZ, so local (x, y)
+ * maps to world (x, -depth, -y) relative to the mesh's own position; per-frame uniform updates
+ * convert each body's physics position into this local space: localX = worldX - centerX,
+ * localY = centerY - worldY.
  */
 function buildWellMesh(level: Level): WellVisual {
   const b = level.bounds
-  const halfX = (b.maxX - b.minX) / 2 + 0.5
-  const halfY = (b.maxY - b.minY) / 2 + 0.5
-  const geomHalfX = halfX + 0.3
-  const geomHalfY = halfY + 0.3
-  const geometry = new THREE.PlaneGeometry(geomHalfX * 2, geomHalfY * 2, 240, 240)
-  const material = createWellMaterial()
-  ;(material.uniforms.uHalfExtent.value as THREE.Vector2).set(halfX, halfY)
-  material.uniforms.uCornerRadius.value = 1.2
+  const halfX = (b.maxX - b.minX) / 2 + 1
+  const halfY = (b.maxY - b.minY) / 2 + 1
+  const geometry = new THREE.PlaneGeometry(halfX * 2, halfY * 2, 240, 240)
+  const center = { x: (b.minX + b.maxX) / 2, y: (b.minY + b.maxY) / 2 }
+  const halfExtent = new THREE.Vector2(halfX, halfY)
+  const maskTexture = createCourseMaskTexture(level, halfExtent, center)
+  const material = createWellMaterial(maskTexture)
+  ;(material.uniforms.uHalfExtent.value as THREE.Vector2).copy(halfExtent)
   const mesh = new THREE.Mesh(geometry, material)
   mesh.rotation.x = -Math.PI / 2
-  const center = { x: (b.minX + b.maxX) / 2, y: (b.minY + b.maxY) / 2 }
   mesh.position.set(center.x, 0, center.y)
-  return { mesh, material, geometry, center }
+  return { mesh, material, geometry, maskTexture, center }
 }
 
-/** Neon putt-putt bumper rail following the level bounds, raised above the sheet. */
-interface BumperVisual {
-  mesh: THREE.Mesh
-  material: THREE.ShaderMaterial
-  geometry: THREE.TubeGeometry
+/**
+ * Neon bumper walls along every edge of the course and its islands (a box per segment plus a
+ * corner post), filled raised island blocks, and a dark skirt hanging below the outer edge.
+ */
+interface CourseStructure {
+  group: THREE.Group
+  wallMaterial: THREE.ShaderMaterial
+  dispose(): void
 }
 
-function buildBumper(level: Level): BumperVisual {
-  const b = level.bounds
-  const corners: Array<[number, number]> = [
-    [b.minX, b.minY],
-    [(b.minX + b.maxX) / 2, b.minY],
-    [b.maxX, b.minY],
-    [b.maxX, (b.minY + b.maxY) / 2],
-    [b.maxX, b.maxY],
-    [(b.minX + b.maxX) / 2, b.maxY],
-    [b.minX, b.maxY],
-    [b.minX, (b.minY + b.maxY) / 2],
-  ]
-  const points = corners.map(([x, z]) => {
-    const y = -wellDepthAt(level, x, z, 0) + 0.25
-    return new THREE.Vector3(x, y, z)
+function buildCourseStructure(level: Level): CourseStructure {
+  const group = new THREE.Group()
+  const wallMaterial = createBumperMaterial()
+  const disposables: Array<() => void> = []
+
+  const segmentGeometry = new THREE.BoxGeometry(1, WALL_HEIGHT, WALL_THICK)
+  const postGeometry = new THREE.CylinderGeometry(WALL_THICK * 0.55, WALL_THICK * 0.55, WALL_HEIGHT, 10)
+  disposables.push(() => {
+    segmentGeometry.dispose()
+    postGeometry.dispose()
   })
-  const curve = new THREE.CatmullRomCurve3(points, true, 'catmullrom', 0.15)
-  const geometry = new THREE.TubeGeometry(curve, 128, 0.09, 8, true)
-  const material = createBumperMaterial()
-  const mesh = new THREE.Mesh(geometry, material)
-  return { mesh, material, geometry }
-}
 
-/** Points sampled for fitting the camera: extreme points of every body, rail, target and far corner. */
-function buildFitPoints(level: Level): THREE.Vector3[] {
-  const t = 0
-  const pts: THREE.Vector3[] = []
-  const pushExtremes = (cx: number, cz: number, r: number, y: number): void => {
-    pts.push(new THREE.Vector3(cx - r, y, cz))
-    pts.push(new THREE.Vector3(cx + r, y, cz))
-    pts.push(new THREE.Vector3(cx, y, cz - r))
-    pts.push(new THREE.Vector3(cx, y, cz + r))
-  }
-  for (const body of level.bodies) {
-    const p = bodyPosition(body, t)
-    const y = -wellDepthAt(level, p.x, p.y, t)
-    pushExtremes(p.x, p.y, body.radius, y)
-    if (body.rail) {
-      const r = body.rail
-      const yc = -wellDepthAt(level, r.center.x, r.center.y, t)
-      pushExtremes(r.center.x, r.center.y, r.radius, yc)
+  function addLoopWalls(loop: Vec2[]): void {
+    const n = loop.length
+    for (let i = 0; i < n; i++) {
+      const a = loop[i]
+      const b = loop[(i + 1) % n]
+      const mx = (a.x + b.x) / 2
+      const my = (a.y + b.y) / 2
+      const len = Math.hypot(b.x - a.x, b.y - a.y)
+      if (len < 1e-6) continue
+      const depth = wellDepthAt(level, mx, my, 0)
+      const mesh = new THREE.Mesh(segmentGeometry, wallMaterial)
+      mesh.scale.set(len, 1, 1)
+      mesh.position.set(mx, -depth + WALL_HEIGHT / 2, my)
+      // rotation.y = angle maps local +X to world (cos, 0, -sin); align it to the edge tangent.
+      mesh.rotation.y = Math.atan2(-(b.y - a.y), b.x - a.x)
+      group.add(mesh)
+    }
+    for (const v of loop) {
+      const depth = wellDepthAt(level, v.x, v.y, 0)
+      const post = new THREE.Mesh(postGeometry, wallMaterial)
+      post.position.set(v.x, -depth + WALL_HEIGHT / 2, v.y)
+      group.add(post)
     }
   }
-  const tp = targetPosition(level.target, t)
-  const ty = -wellDepthAt(level, tp.x, tp.y, t)
-  pushExtremes(tp.x, tp.y, level.target.radius, ty)
-  if (level.target.rail) {
-    const r = level.target.rail
-    const yc = -wellDepthAt(level, r.center.x, r.center.y, t)
-    pushExtremes(r.center.x, r.center.y, r.radius, yc)
+
+  addLoopWalls(level.course)
+  for (const island of level.islands) addLoopWalls(island)
+
+  // Islands: filled raised blocks, dark indigo top with a neon edge.
+  const islandTopMaterial = new THREE.MeshStandardMaterial({ color: 0x1e1b4b, roughness: 0.75, metalness: 0.1 })
+  const islandEdgeMaterial = new THREE.LineBasicMaterial({ color: 0x67e8f9, transparent: true, opacity: 0.8 })
+  disposables.push(() => {
+    islandTopMaterial.dispose()
+    islandEdgeMaterial.dispose()
+  })
+  for (const island of level.islands) {
+    if (island.length < 3) continue
+    const shape = new THREE.Shape(island.map((p) => new THREE.Vector2(p.x, p.y)))
+    const geometry = new THREE.ExtrudeGeometry(shape, { depth: ISLAND_HEIGHT, bevelEnabled: false })
+    let cx = 0
+    let cy = 0
+    for (const p of island) {
+      cx += p.x
+      cy += p.y
+    }
+    cx /= island.length
+    cy /= island.length
+    const depth = wellDepthAt(level, cx, cy, 0)
+    const mesh = new THREE.Mesh(geometry, islandTopMaterial)
+    mesh.rotation.x = -Math.PI / 2
+    mesh.position.y = -depth
+    group.add(mesh)
+    const edgesGeometry = new THREE.EdgesGeometry(geometry)
+    const edges = new THREE.LineSegments(edgesGeometry, islandEdgeMaterial)
+    edges.rotation.x = -Math.PI / 2
+    edges.position.y = -depth
+    group.add(edges)
+    disposables.push(() => {
+      geometry.dispose()
+      edgesGeometry.dispose()
+    })
   }
-  const b = level.bounds
-  pts.push(new THREE.Vector3(b.maxX, 0, 0.8 * b.maxY))
-  pts.push(new THREE.Vector3(b.maxX, 0, -0.8 * b.maxY))
-  return pts
+
+  // Skirt: a dark band hanging below the outer edge so the course reads as a floating slab.
+  const skirtMaterial = new THREE.MeshBasicMaterial({ color: 0x0a0a14, side: THREE.DoubleSide })
+  disposables.push(() => skirtMaterial.dispose())
+  {
+    const n = level.course.length
+    const positions: number[] = []
+    const indices: number[] = []
+    for (let i = 0; i < n; i++) {
+      const a = level.course[i]
+      const b = level.course[(i + 1) % n]
+      const ya = -wellDepthAt(level, a.x, a.y, 0)
+      const yb = -wellDepthAt(level, b.x, b.y, 0)
+      const base = positions.length / 3
+      positions.push(a.x, ya, a.y, b.x, yb, b.y, b.x, yb - SKIRT_DROP, b.y, a.x, ya - SKIRT_DROP, a.y)
+      indices.push(base, base + 1, base + 2, base, base + 2, base + 3)
+    }
+    const skirtGeometry = new THREE.BufferGeometry()
+    skirtGeometry.setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array(positions), 3))
+    skirtGeometry.setIndex(indices)
+    skirtGeometry.computeVertexNormals()
+    const skirt = new THREE.Mesh(skirtGeometry, skirtMaterial)
+    group.add(skirt)
+    disposables.push(() => skirtGeometry.dispose())
+  }
+
+  return {
+    group,
+    wallMaterial,
+    dispose() {
+      wallMaterial.dispose()
+      for (const d of disposables) d()
+    },
+  }
 }
 
 export function createEngine(canvas: HTMLCanvasElement, events: EngineEvents): EngineApi {
@@ -603,12 +690,16 @@ export function createEngine(canvas: HTMLCanvasElement, events: EngineEvents): E
   renderer.setClearColor(0x05040d, 1)
 
   const scene = new THREE.Scene()
-  const camera = new THREE.PerspectiveCamera(FOV, 1, 0.1, 4000)
+  const camera = new THREE.PerspectiveCamera(CHASE_FOV_LANDSCAPE, 1, 0.1, 4000)
 
   const ambient = new THREE.AmbientLight(0xffffff, 0.35)
   const sun = new THREE.DirectionalLight(0xffffff, 1.15)
   sun.position.set(-0.6, 0.8, 0.35)
   scene.add(ambient, sun)
+
+  // Soft fill light near the ball, on the camera's side, so the alien golfer reads clearly from behind.
+  const teeFillLight = new THREE.PointLight(0xdff6ff, 0.9, 14, 2)
+  scene.add(teeFillLight)
 
   const glowTexture = createGlowTexture()
   const nebula = createNebulaSphere()
@@ -661,12 +752,12 @@ export function createEngine(canvas: HTMLCanvasElement, events: EngineEvents): E
   scene.add(activeTrail.group)
   const ghostPool = new GhostTrailPool(scene)
 
-  // --- Probe: a glossy white golf ball ---------------------------------------------------------------
-  const probeGeometry = new THREE.SphereGeometry(0.12, 20, 16)
-  const probeMaterial = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.28, metalness: 0.05 })
-  const probeMesh = new THREE.Mesh(probeGeometry, probeMaterial)
-  probeMesh.visible = false
-  scene.add(probeMesh)
+  // --- Ball: a glossy white golf ball ------------------------------------------------------------
+  const ballGeometry = new THREE.SphereGeometry(BALL_RADIUS, 20, 16)
+  const ballMaterial = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.28, metalness: 0.05 })
+  const ballMesh = new THREE.Mesh(ballGeometry, ballMaterial)
+  ballMesh.visible = false
+  scene.add(ballMesh)
 
   const glowMaterial = new THREE.SpriteMaterial({
     map: glowTexture,
@@ -675,12 +766,30 @@ export function createEngine(canvas: HTMLCanvasElement, events: EngineEvents): E
     depthWrite: false,
     blending: THREE.AdditiveBlending,
   })
-  const probeGlow = new THREE.Sprite(glowMaterial)
-  probeGlow.scale.set(0.5, 0.5, 0.5)
-  probeGlow.visible = false
-  scene.add(probeGlow)
+  const ballGlow = new THREE.Sprite(glowMaterial)
+  ballGlow.scale.set(0.5, 0.5, 0.5)
+  ballGlow.visible = false
+  scene.add(ballGlow)
 
-  // --- Aim indicator: flat ribbon + shrinking prediction dots -----------------------------------------
+  // The resting ball at the lie: visible while aiming and mid-swing, hidden the instant the club
+  // makes contact and the flying ball (ballMesh above) takes over.
+  const restBallMesh = new THREE.Mesh(ballGeometry, ballMaterial)
+  restBallMesh.visible = false
+  scene.add(restBallMesh)
+  let showRestingBall = true
+
+  // --- Alien golfer -----------------------------------------------------------------------------
+  const alien: AlienGolfer = createAlienGolfer()
+  scene.add(alien.group)
+  let alienHopK: number | null = null
+
+  // --- Living background + floating spectator stands ---------------------------------------------
+  const backdrop: Backdrop = createBackdrop()
+  scene.add(backdrop.group)
+  const crowd: Crowd = createCrowd()
+  scene.add(crowd.group)
+
+  // --- Aim indicator: flat ribbon + tapered glowing curve + shrinking prediction dots -----------------
   const ribbonGeometry = new THREE.BufferGeometry()
   const ribbonPositions = new Float32Array(RIBBON_SAMPLES * 2 * 3)
   const ribbonUvs = new Float32Array(RIBBON_SAMPLES * 2 * 2)
@@ -711,22 +820,48 @@ export function createEngine(canvas: HTMLCanvasElement, events: EngineEvents): E
   const predictionMaterial = createPredictionDotsMaterial()
   const predictionPoints = new THREE.Points(predictionGeometry, predictionMaterial)
 
+  // Tapered glowing curve under the prediction dots, built the same way as the aim ribbon (a strip
+  // of quads whose half-width shrinks along the path) so the initial bend of the shot is obvious.
+  const PREDICT_MAX_SAMPLES = Math.ceil(PREDICT_SECONDS / DT / PREDICT_STRIDE) + 2
+  const predictCurveGeometry = new THREE.BufferGeometry()
+  const predictCurvePositions = new Float32Array(PREDICT_MAX_SAMPLES * 2 * 3)
+  const predictCurveUvs = new Float32Array(PREDICT_MAX_SAMPLES * 2 * 2)
+  const predictCurveIndices: number[] = []
+  for (let i = 0; i < PREDICT_MAX_SAMPLES - 1; i++) {
+    const a = i * 2
+    const b = i * 2 + 1
+    const c = (i + 1) * 2
+    const d = (i + 1) * 2 + 1
+    predictCurveIndices.push(a, c, b, b, c, d)
+  }
+  predictCurveGeometry.setAttribute('position', new THREE.BufferAttribute(predictCurvePositions, 3))
+  predictCurveGeometry.setAttribute('uv', new THREE.BufferAttribute(predictCurveUvs, 2))
+  predictCurveGeometry.setIndex(predictCurveIndices)
+  predictCurveGeometry.setDrawRange(0, 0)
+  const predictCurveMaterial = createPredictionCurveMaterial()
+  const predictCurveMesh = new THREE.Mesh(predictCurveGeometry, predictCurveMaterial)
+  predictCurveMesh.frustumCulled = false
+
   const aimGroup = new THREE.Group()
-  aimGroup.add(ribbonMesh, predictionPoints)
+  aimGroup.add(ribbonMesh, predictCurveMesh, predictionPoints)
   scene.add(aimGroup)
 
-  // --- Gravity well + bodies + gate + bumper (rebuilt per level) ----------------------------------------------
+  // --- Gravity well + hazards + tee + cup + course structure (rebuilt per level) -------------------
   let bodyVisuals: BodyVisual[] = []
-  let gateVisual: GateVisual | null = null
+  let teeVisual: TeeVisual | null = null
+  let cupVisual: CupVisual | null = null
   let well: WellVisual | null = null
-  let bumper: BumperVisual | null = null
+  let courseStructure: CourseStructure | null = null
+  let courseWallMaterial: THREE.ShaderMaterial | null = null
 
   // --- Mutable engine state --------------------------------------------------------------------------
   let currentLevel: Level | null = null
+  /** Where the next stroke is played from. Owned entirely by the engine. */
+  let lie: Vec2 = { x: 0, y: 0 }
   let aim: Aim = { angle: 0, power: 0.5 }
   let aimDirty = true
   let flying = false
-  let probeState: ProbeState | null = null
+  let ballState: BallState | null = null
   let flightStepCounter = 0
   let closestApproach = Infinity
   let postFlightT = 0
@@ -736,10 +871,32 @@ export function createEngine(canvas: HTMLCanvasElement, events: EngineEvents): E
   let lastWidth = 0
   let lastHeight = 0
 
-  let camTarget = new THREE.Vector3()
-  let camDistance = 20
-  const camFollowLookAt = new THREE.Vector3()
-  let camFollowDistance = 20
+  // Swing delay: onLaunch()/isFlying() fire/flip immediately, but the physical ball only exists
+  // from contact onward.
+  let pendingLaunchAim: Aim | null = null
+  let swingTimer = 0
+
+  // Post-outcome sequencing (sink / wait+hop / beam-back). See endShot() and updatePostPhase().
+  type PostPhase = 'goalSink' | 'restWait' | 'restHop' | 'hazardBeam' | null
+  let postPhase: PostPhase = null
+  let postPhaseT = 0
+  let pendingResult: ShotResult | null = null
+  let hopFrom: Vec2 | null = null
+  let hopTo: Vec2 | null = null
+  let hopDuration = REST_HOP_DURATION
+  const sinkStartPos = new THREE.Vector3()
+
+  // --- Chase camera state --------------------------------------------------------------------------
+  let chaseDir: Vec2 = { x: 1, y: 0 }
+  const camPos = new THREE.Vector3()
+  const camLookAt = new THREE.Vector3()
+  const glideFromPos = new THREE.Vector3()
+  const glideFromLookAt = new THREE.Vector3()
+  const glideToPos = new THREE.Vector3()
+  const glideToLookAt = new THREE.Vector3()
+  let glideT = 0
+  let glideDuration = 0
+  let currentFov = CHASE_FOV_LANDSCAPE
   let shakeTimer = 0
 
   const effects: Effect[] = []
@@ -781,29 +938,6 @@ export function createEngine(canvas: HTMLCanvasElement, events: EngineEvents): E
     })
   }
 
-  function spawnCrashEffect(pos: Vec2, y: number): void {
-    spawnRingEffect(pos, y, 0xffb703, 8, 0.5)
-    const count = 40 + Math.floor(Math.random() * 30)
-    for (let i = 0; i < count; i++) {
-      const a = Math.random() * Math.PI * 2
-      const speed = 1 + Math.random() * 3
-      const vy = Math.random() * 1.5
-      particlePool.spawn(
-        pos.x,
-        y + 0.1,
-        pos.y,
-        Math.cos(a) * speed,
-        vy,
-        Math.sin(a) * speed,
-        new THREE.Color(Math.random() > 0.5 ? 0xffb703 : 0xff8a3d),
-        0.09 + Math.random() * 0.08,
-        0.5 + Math.random() * 0.5,
-        { drag: 1.2 },
-      )
-    }
-    triggerShake()
-  }
-
   function spawnGoalBurst(pos: Vec2, y: number): void {
     spawnRingEffect(pos, y, 0x6ee7b7, 6, 0.6)
     const count = 60
@@ -830,10 +964,110 @@ export function createEngine(canvas: HTMLCanvasElement, events: EngineEvents): E
     spawnRingEffect(pos, y, 0xf0fbff, 5, 0.4)
   }
 
+  /** Burn-up / swirl / debris / fall-away flash depending on what ended the shot. */
+  function spawnHazardEffect(level: Level, hazardId: string | null, pos: Vec2, y: number): void {
+    const body = hazardId ? level.bodies.find((b) => b.id === hazardId) ?? null : null
+    if (!body) {
+      spawnRingEffect(pos, y, 0x94a3b8, 4, 0.4)
+      triggerShake()
+      return
+    }
+    if (body.kind === 'blackhole') {
+      spawnRingEffect(pos, y, 0x1e1b4b, 10, 0.6)
+      for (let i = 0; i < 50; i++) {
+        const a = Math.random() * Math.PI * 2
+        const r = 0.1 + Math.random() * 0.3
+        particlePool.spawn(
+          pos.x + Math.cos(a) * r,
+          y + 0.05,
+          pos.y + Math.sin(a) * r,
+          -Math.cos(a) * 2,
+          0.1,
+          -Math.sin(a) * 2,
+          new THREE.Color(0x8b5cf6),
+          0.07,
+          0.5,
+          { drag: 1 },
+        )
+      }
+      triggerShake()
+      return
+    }
+    if (body.kind === 'asteroid') {
+      spawnRingEffect(pos, y, 0x8a7968, 5, 0.4)
+      for (let i = 0; i < 30; i++) {
+        const a = Math.random() * Math.PI * 2
+        particlePool.spawn(
+          pos.x,
+          y + 0.1,
+          pos.y,
+          Math.cos(a) * (1 + Math.random() * 2),
+          Math.random() * 1.5,
+          Math.sin(a) * (1 + Math.random() * 2),
+          new THREE.Color(0x8a7968),
+          0.08,
+          0.6,
+          { drag: 1, gravity: 2 },
+        )
+      }
+      triggerShake()
+      return
+    }
+    // Planet or moon: a burn-up flash.
+    spawnRingEffect(pos, y, 0xffb703, 7, 0.5)
+    for (let i = 0; i < 40; i++) {
+      const a = Math.random() * Math.PI * 2
+      particlePool.spawn(
+        pos.x,
+        y + 0.1,
+        pos.y,
+        Math.cos(a) * (1 + Math.random() * 2),
+        Math.random() * 1.2,
+        Math.sin(a) * (1 + Math.random() * 2),
+        new THREE.Color(Math.random() > 0.5 ? 0xffb703 : 0xff8a3d),
+        0.09,
+        0.5,
+        { drag: 1.2 },
+      )
+    }
+    triggerShake()
+  }
+
+  function onBallBounce(pos: Vec2, y: number, speed: number): void {
+    events.onBounce(speed)
+    if (courseWallMaterial) {
+      ;(courseWallMaterial.uniforms.uFlashPos.value as THREE.Vector3).set(pos.x, y, pos.y)
+      courseWallMaterial.uniforms.uFlashAge.value = 0
+    }
+    const count = Math.min(18, 6 + Math.floor(speed))
+    for (let i = 0; i < count; i++) {
+      const a = Math.random() * Math.PI * 2
+      const s = 0.3 + Math.random() * speed * 0.3
+      particlePool.spawn(
+        pos.x,
+        y + 0.05,
+        pos.y,
+        Math.cos(a) * s,
+        0.2 + Math.random() * 0.4,
+        Math.sin(a) * s,
+        new THREE.Color(0xfef3c7),
+        0.05,
+        0.35,
+        { drag: 2 },
+      )
+    }
+  }
+
   function updateEffects(dt: number): void {
     for (let i = effects.length - 1; i >= 0; i--) {
       if (!effects[i].update(dt)) effects.splice(i, 1)
     }
+  }
+
+  /** Coarse pointers and narrow screens get a lighter decorative load to hold 60fps on phones. */
+  function computeLowPerf(): boolean {
+    const w = canvas.clientWidth || lastWidth
+    return coarsePointerQuery.matches || w < 700
   }
 
   // --- Level / body rebuild ---------------------------------------------------------------------------
@@ -843,33 +1077,45 @@ export function createEngine(canvas: HTMLCanvasElement, events: EngineEvents): E
       v.dispose()
     }
     bodyVisuals = level.bodies.map((body) => {
-      const v = buildBodyVisual(body, level, visualCtx)
+      const v = buildBodyVisual(body, visualCtx)
       scene.add(v.group)
       return v
     })
 
-    if (gateVisual) {
-      scene.remove(gateVisual.group)
-      gateVisual.dispose()
+    if (teeVisual) {
+      scene.remove(teeVisual.group)
+      teeVisual.dispose()
     }
-    gateVisual = buildGateVisual(level, visualCtx)
-    scene.add(gateVisual.group)
+    teeVisual = buildTeeVisual(level)
+    scene.add(teeVisual.group)
+
+    if (cupVisual) {
+      scene.remove(cupVisual.group)
+      cupVisual.dispose()
+    }
+    cupVisual = buildCupVisual(level, visualCtx)
+    scene.add(cupVisual.group)
 
     if (well) {
       scene.remove(well.mesh)
       well.geometry.dispose()
       well.material.dispose()
+      well.maskTexture.dispose()
     }
     well = buildWellMesh(level)
     scene.add(well.mesh)
 
-    if (bumper) {
-      scene.remove(bumper.mesh)
-      bumper.geometry.dispose()
-      bumper.material.dispose()
+    if (courseStructure) {
+      scene.remove(courseStructure.group)
+      courseStructure.dispose()
     }
-    bumper = buildBumper(level)
-    scene.add(bumper.mesh)
+    courseStructure = buildCourseStructure(level)
+    courseWallMaterial = courseStructure.wallMaterial
+    scene.add(courseStructure.group)
+
+    const lowPerf = computeLowPerf()
+    backdrop.build(level, { lowPerf })
+    crowd.build(level, { lowPerf })
   }
 
   function updateWellUniforms(tSim: number): void {
@@ -890,94 +1136,122 @@ export function createEngine(canvas: HTMLCanvasElement, events: EngineEvents): E
     well.material.uniforms.uTime.value = elapsed
   }
 
-  // --- Camera fitting -----------------------------------------------------------------------------
-  function fitsNdc(points: THREE.Vector3[], yMin: number): boolean {
+  // --- Chase camera -----------------------------------------------------------------------------
+  function updateChaseDir(lieP: Vec2, cupP: Vec2): void {
+    const dx = cupP.x - lieP.x
+    const dy = cupP.y - lieP.y
+    const dist = Math.hypot(dx, dy)
+    if (dist >= CUP_NEAR_DIST) chaseDir = { x: dx / dist, y: dy / dist }
+  }
+
+  function fitsChaseNdc(points: THREE.Vector3[], yMin: number): boolean {
     for (const p of points) {
       const proj = p.clone().project(camera)
-      if (Math.abs(proj.x) > NDC_X_LIMIT || proj.y < yMin || proj.y > (lastHeight > lastWidth ? NDC_Y_MAX_PORTRAIT : NDC_Y_MAX_LANDSCAPE)) return false
+      if (Math.abs(proj.x) > NDC_X_LIMIT || proj.y < yMin || proj.y > NDC_Y_MAX) return false
     }
     return true
   }
 
-  function placeCameraAt(target: THREE.Vector3, azimuth: number, dist: number): void {
-    const dir = new THREE.Vector3(
-      Math.cos(azimuth) * Math.cos(ELEVATION),
-      Math.sin(ELEVATION),
-      Math.sin(azimuth) * Math.cos(ELEVATION),
-    )
-    camera.position.copy(target).addScaledVector(dir, dist)
-    camera.lookAt(target)
-    camera.updateMatrixWorld()
-  }
+  /** Behind the ball looking toward the cup; pulled back (up to +60%) so the key points fit NDC. */
+  function computeChaseFraming(level: Level, lieP: Vec2, portrait: boolean): { pos: THREE.Vector3; lookAt: THREE.Vector3; fov: number } {
+    const cupP = targetPosition(level.target, 0)
+    updateChaseDir(lieP, cupP)
+    const back = portrait ? CHASE_BACK_PORTRAIT : CHASE_BACK_LANDSCAPE
+    const fov = portrait ? CHASE_FOV_PORTRAIT : CHASE_FOV_LANDSCAPE
+    const yMin = portrait ? -0.52 : -0.62
+    const lieY = -wellDepthAt(level, lieP.x, lieP.y, 0)
 
-  /** Binary search on distance so every point of interest fits inside the NDC box reserved for HUD. */
-  function solveCameraDistance(target: THREE.Vector3, azimuth: number, points: THREE.Vector3[], yMin: number): number {
-    let hi = 20
-    placeCameraAt(target, azimuth, hi)
+    camera.fov = fov
+    camera.aspect = lastWidth / Math.max(1, lastHeight)
+    camera.updateProjectionMatrix()
+
+    const aheadX = lieP.x + chaseDir.x * CHASE_AHEAD_POINT
+    const aheadY = lieP.y + chaseDir.y * CHASE_AHEAD_POINT
+    const points = [
+      new THREE.Vector3(lieP.x - chaseDir.x * 0.4, lieY + 1.5, lieP.y - chaseDir.y * 0.4),
+      new THREE.Vector3(lieP.x, lieY + BALL_RADIUS, lieP.y),
+      new THREE.Vector3(aheadX, -wellDepthAt(level, aheadX, aheadY, 0), aheadY),
+    ]
+
+    const lookAt = new THREE.Vector3(lieP.x + chaseDir.x * CHASE_LOOKAHEAD, lieY + 0.4, lieP.y + chaseDir.y * CHASE_LOOKAHEAD)
+
+    function place(k: number): void {
+      const horiz = back * k
+      const height = horiz * Math.tan(CHASE_ELEVATION)
+      camera.position.set(lieP.x - chaseDir.x * horiz, lieY + height, lieP.y - chaseDir.y * horiz)
+      camera.lookAt(lookAt)
+      camera.updateMatrixWorld()
+    }
+
+    let k = 1
+    place(k)
     let guard = 0
-    while (!fitsNdc(points, yMin) && guard < 24) {
-      hi *= 1.6
-      placeCameraAt(target, azimuth, hi)
+    while (!fitsChaseNdc(points, yMin) && k < CHASE_PULLBACK_MAX && guard < 20) {
+      k = Math.min(CHASE_PULLBACK_MAX, k + 0.05)
+      place(k)
       guard++
     }
-    let lo = 0.05
-    for (let i = 0; i < 26; i++) {
-      const mid = (lo + hi) / 2
-      placeCameraAt(target, azimuth, mid)
-      if (fitsNdc(points, yMin)) hi = mid
-      else lo = mid
-    }
-    return hi
+
+    return { pos: camera.position.clone(), lookAt, fov }
   }
 
-  function fitCameraToLevel(): void {
-    if (!currentLevel || lastWidth === 0 || lastHeight === 0) return
-    camera.aspect = lastWidth / lastHeight
-    camera.updateProjectionMatrix()
-    const level = currentLevel
-    const home = homeBody(level)
-    const homePos = bodyPosition(home, 0)
-    const farX = level.bounds.maxX
+  function snapCameraToLie(level: Level, lieP: Vec2): void {
+    if (lastWidth === 0 || lastHeight === 0) return
     const portrait = lastHeight > lastWidth
-    const yMin = portrait ? -0.52 : -0.62
-    const points = buildFitPoints(level)
-    // Slide the look-at point along the course and keep the framing that gets the camera closest,
-    // so the green fills the view on wide desktop screens as well as tall phones.
-    let bestDistance = Infinity
-    for (let f = 0.2; f <= 0.8001; f += 0.05) {
-      const candidate = new THREE.Vector3(homePos.x + f * (farX - homePos.x), -0.5, homePos.y)
-      const d = solveCameraDistance(candidate, BASE_AZIMUTH, points, yMin)
-      if (d < bestDistance) {
-        bestDistance = d
-        camTarget = candidate
-      }
-    }
-    camDistance = bestDistance
-    camFollowLookAt.copy(camTarget)
-    camFollowDistance = camDistance
+    const framing = computeChaseFraming(level, lieP, portrait)
+    camPos.copy(framing.pos)
+    camLookAt.copy(framing.lookAt)
+    glideToPos.copy(framing.pos)
+    glideToLookAt.copy(framing.lookAt)
+    currentFov = framing.fov
+    glideDuration = 0
+  }
+
+  function glideCameraToLie(level: Level, lieP: Vec2): void {
+    if (lastWidth === 0 || lastHeight === 0) return
+    const portrait = lastHeight > lastWidth
+    const framing = computeChaseFraming(level, lieP, portrait)
+    glideFromPos.copy(camPos)
+    glideFromLookAt.copy(camLookAt)
+    glideToPos.copy(framing.pos)
+    glideToLookAt.copy(framing.lookAt)
+    currentFov = framing.fov
+    glideT = 0
+    glideDuration = LIE_GLIDE_DURATION
   }
 
   function updateCamera(dt: number): void {
-    const sway = reducedMotion ? 0 : Math.sin(elapsed * 0.15) * IDLE_SWAY
-
-    let desiredLookAt = camTarget
-    let desiredDistance = camDistance
-    if (flying && probeState && !reducedMotion) {
-      const probeWorld = probeMesh.position
-      desiredLookAt = camTarget.clone().lerp(probeWorld, CAMERA_FOLLOW_LOOKAT_FRAC)
-      desiredDistance = camDistance * (1 - CAMERA_DOLLY_FRAC)
-    }
-
-    if (reducedMotion) {
-      camFollowLookAt.copy(desiredLookAt)
-      camFollowDistance = desiredDistance
+    if (glideDuration > 0 && !reducedMotion) {
+      glideT += dt
+      const t = Math.min(1, glideT / glideDuration)
+      const e = easeInOutCubic(t)
+      camPos.lerpVectors(glideFromPos, glideToPos, e)
+      camLookAt.lerpVectors(glideFromLookAt, glideToLookAt, e)
+      if (t >= 1) glideDuration = 0
     } else {
-      const alpha = 1 - Math.exp(-dt / CAMERA_TAU)
-      camFollowLookAt.lerp(desiredLookAt, alpha)
-      camFollowDistance += (desiredDistance - camFollowDistance) * alpha
+      camPos.copy(glideToPos)
+      camLookAt.copy(glideToLookAt)
+      glideDuration = 0
     }
 
-    placeCameraAt(camFollowLookAt, BASE_AZIMUTH + sway, camFollowDistance)
+    let finalPos = camPos
+    let finalLookAt = camLookAt
+    if (flying && ballState && !reducedMotion) {
+      finalLookAt = camLookAt.clone().lerp(ballMesh.position, CHASE_FOLLOW_LOOKAT_FRAC)
+      finalPos = camPos.clone().lerp(ballMesh.position, 0.05)
+    }
+
+    camera.fov = currentFov
+    camera.aspect = lastWidth / Math.max(1, lastHeight)
+    camera.updateProjectionMatrix()
+    camera.position.copy(finalPos)
+    camera.lookAt(finalLookAt)
+
+    if (!reducedMotion) {
+      const sway = Math.sin(elapsed * 0.15) * IDLE_SWAY
+      camera.rotateY(sway)
+    }
+    camera.updateMatrixWorld()
 
     if (shakeTimer > 0 && !reducedMotion) {
       shakeTimer = Math.max(0, shakeTimer - dt)
@@ -992,20 +1266,18 @@ export function createEngine(canvas: HTMLCanvasElement, events: EngineEvents): E
   function updateAimIndicator(): void {
     if (!currentLevel || !aimDirty) return
     const level = currentLevel
-    const home = homeBody(level)
-    const homePos = bodyPosition(home, 0)
     const dirX = Math.cos(aim.angle)
     const dirY = Math.sin(aim.angle)
     const perpX = -dirY
     const perpZ = dirX
     const length = THREE.MathUtils.lerp(AIM_MIN_LENGTH, AIM_MAX_LENGTH, aim.power)
-    const startR = home.radius + 0.05
+    const startR = BALL_RADIUS + 0.05
 
     for (let i = 0; i < RIBBON_SAMPLES; i++) {
       const frac = i / (RIBBON_SAMPLES - 1)
       const d = startR + length * frac
-      const x = homePos.x + dirX * d
-      const z = homePos.y + dirY * d
+      const x = lie.x + dirX * d
+      const z = lie.y + dirY * d
       const y = -wellDepthAt(level, x, z, 0) + 0.05
       const lx = x - perpX * RIBBON_HALF_WIDTH
       const lz = z - perpZ * RIBBON_HALF_WIDTH
@@ -1022,7 +1294,7 @@ export function createEngine(canvas: HTMLCanvasElement, events: EngineEvents): E
     ;(ribbonGeometry.attributes.position as THREE.BufferAttribute).needsUpdate = true
     ribbonMaterial.uniforms.uPower.value = aim.power
 
-    const path = predictPath(level, aim, PREDICT_SECONDS, PREDICT_STRIDE)
+    const path = predictPath(level, lie, aim, PREDICT_SECONDS, PREDICT_STRIDE)
     const count = path.length / 2
     const positions = new Float32Array(count * 3)
     const sizes = new Float32Array(count)
@@ -1038,6 +1310,42 @@ export function createEngine(canvas: HTMLCanvasElement, events: EngineEvents): E
     }
     predictionGeometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
     predictionGeometry.setAttribute('aSize', new THREE.Float32BufferAttribute(sizes, 1))
+
+    // Tapered glowing curve beneath the dots: a strip whose half-width shrinks toward the tail.
+    const curveSamples = Math.min(count, PREDICT_MAX_SAMPLES)
+    for (let i = 0; i < curveSamples; i++) {
+      const px = positions[i * 3]
+      const py = positions[i * 3 + 1] + 0.01
+      const pz = positions[i * 3 + 2]
+      const nx = i < curveSamples - 1 ? positions[(i + 1) * 3] : px
+      const nz = i < curveSamples - 1 ? positions[(i + 1) * 3 + 2] : pz
+      const px0 = i > 0 ? positions[(i - 1) * 3] : px
+      const pz0 = i > 0 ? positions[(i - 1) * 3 + 2] : pz
+      let tx = nx - px0
+      let tz = nz - pz0
+      const tlen = Math.hypot(tx, tz) || 1
+      tx /= tlen
+      tz /= tlen
+      const pxp = -tz
+      const pzp = tx
+      const frac = i / Math.max(1, curveSamples - 1)
+      const halfW = THREE.MathUtils.lerp(0.1, 0.015, frac)
+      const base = i * 6
+      predictCurvePositions[base] = px - pxp * halfW
+      predictCurvePositions[base + 1] = py
+      predictCurvePositions[base + 2] = pz - pzp * halfW
+      predictCurvePositions[base + 3] = px + pxp * halfW
+      predictCurvePositions[base + 4] = py
+      predictCurvePositions[base + 5] = pz + pzp * halfW
+      predictCurveUvs[i * 4] = frac
+      predictCurveUvs[i * 4 + 1] = 0
+      predictCurveUvs[i * 4 + 2] = frac
+      predictCurveUvs[i * 4 + 3] = 1
+    }
+    ;(predictCurveGeometry.attributes.position as THREE.BufferAttribute).needsUpdate = true
+    ;(predictCurveGeometry.attributes.uv as THREE.BufferAttribute).needsUpdate = true
+    predictCurveGeometry.setDrawRange(0, Math.max(0, (curveSamples - 1) * 6))
+
     aimDirty = false
   }
 
@@ -1045,67 +1353,252 @@ export function createEngine(canvas: HTMLCanvasElement, events: EngineEvents): E
     aim = clampAim(next)
     aimDirty = true
     updateAimIndicator()
+    if (!flying) alien.setAimAngle(aim.angle)
     events.onAimChange(aim, dragging)
   }
 
-  // --- Flight ------------------------------------------------------------------------------------
+  // --- Flight (one stroke) -------------------------------------------------------------------------
   function beginFlight(a: Aim): void {
     if (!currentLevel || flying) return
     const launchAim = clampAim(a)
     events.onLaunch(launchAim)
     aim = launchAim
     flying = true
-    probeState = launchState(currentLevel, aim)
+    ballState = null
+    alien.setAimAngle(launchAim.angle)
+    const contactDelay = reducedMotion ? 0 : alien.playSwing()
+    if (contactDelay <= 0) {
+      performContact(launchAim)
+    } else {
+      pendingLaunchAim = launchAim
+      swingTimer = contactDelay
+    }
+  }
+
+  function performContact(a: Aim): void {
+    if (!currentLevel) return
+    pendingLaunchAim = null
+    ballState = launchState(currentLevel, lie, a)
     flightStepCounter = 0
     closestApproach = Infinity
     postFlightTimer = 0
     activeTrail.reset()
-    const depth0 = wellDepthAt(currentLevel, probeState.pos.x, probeState.pos.y, 0)
+    const depth0 = wellDepthAt(currentLevel, ballState.pos.x, ballState.pos.y, 0)
     const y0 = -depth0 + 0.14
-    activeTrail.addPoint(probeState.pos.x, y0, probeState.pos.y)
-    probeMesh.visible = true
-    probeGlow.visible = true
-    probeMesh.position.set(probeState.pos.x, y0, probeState.pos.y)
-    probeGlow.position.copy(probeMesh.position)
-    spawnLaunchShockwave(bodyPosition(homeBody(currentLevel), 0), -depth0)
+    activeTrail.addPoint(ballState.pos.x, y0, ballState.pos.y)
+    ballMesh.visible = true
+    ballGlow.visible = true
+    ballMesh.scale.setScalar(1)
+    ballMesh.position.set(ballState.pos.x, y0, ballState.pos.y)
+    ballGlow.scale.setScalar(1)
+    ballGlow.position.copy(ballMesh.position)
+    showRestingBall = false
+    spawnLaunchShockwave(lie, -depth0)
+    for (let i = 0; i < 20; i++) {
+      const ang = Math.random() * Math.PI * 2
+      const speed = 0.6 + Math.random() * 1.4
+      particlePool.spawn(
+        ballState.pos.x,
+        y0,
+        ballState.pos.y,
+        Math.cos(ang) * speed,
+        0.3 + Math.random() * 0.6,
+        Math.sin(ang) * speed,
+        new THREE.Color(0xf0fbff),
+        0.06,
+        0.4,
+        { drag: 1.5 },
+      )
+    }
   }
 
-  function endFlight(outcome: NonNullable<ReturnType<typeof checkOutcome>['outcome']>, crashedInto: string | null): void {
-    if (!probeState || !currentLevel) return
-    flying = false
-    const result: SimResult = { outcome, crashedInto, time: probeState.t, closest: closestApproach }
-    postFlightT = probeState.t
-    postFlightTimer = POST_FLIGHT_HOLD
-    probeMesh.visible = false
-    probeGlow.visible = false
+  function endShot(outcome: Outcome, hazardId: string | null): void {
+    if (!ballState || !currentLevel) return
+    const level = currentLevel
+    const result: ShotResult = {
+      outcome,
+      hazardId,
+      time: ballState.t,
+      closest: closestApproach,
+      end: { x: ballState.pos.x, y: ballState.pos.y },
+      bounces: ballState.bounces,
+    }
     if (activeTrail.hasSegments()) {
       const ghost = activeTrail.toGhost(outcome === 'goal' ? 'goal' : 'other')
       ghost.setResolution(lastWidth, lastHeight)
       ghostPool.add(ghost)
     }
     activeTrail.reset()
-    const depthEnd = wellDepthAt(currentLevel, probeState.pos.x, probeState.pos.y, probeState.t)
-    if (outcome === 'crash') spawnCrashEffect(probeState.pos, -depthEnd)
-    if (outcome === 'goal') spawnGoalBurst(targetPosition(currentLevel.target, probeState.t), -depthEnd)
-    aimDirty = true
+    const depthEnd = wellDepthAt(level, ballState.pos.x, ballState.pos.y, ballState.t)
+    const endY = -depthEnd + 0.14
+
+    if (outcome === 'goal') {
+      alien.setWatchTarget(null)
+      alien.react('cheer')
+      crowd.react('cheer')
+      spawnGoalBurst(targetPosition(level.target, ballState.t), -depthEnd)
+      sinkStartPos.set(ballState.pos.x, endY, ballState.pos.y)
+      pendingResult = result
+      postPhase = 'goalSink'
+      postPhaseT = 0
+      postFlightT = ballState.t
+      postFlightTimer = GOAL_SINK_DURATION
+      return
+    }
+
+    if (outcome === 'rest') {
+      alien.setWatchTarget(null)
+      if (result.closest <= NEAR_MISS_DISTANCE) crowd.react('groan')
+      events.onResult(result)
+      ballMesh.position.set(ballState.pos.x, endY, ballState.pos.y)
+      ballGlow.position.copy(ballMesh.position)
+      hopFrom = { x: lie.x, y: lie.y }
+      hopTo = { x: result.end.x, y: result.end.y }
+      glideCameraToLie(level, hopTo)
+      postPhase = 'restWait'
+      postPhaseT = 0
+      postFlightT = ballState.t
+      postFlightTimer = REST_WAIT_DURATION + REST_HOP_DURATION
+      return
+    }
+
+    // hazard
+    alien.setWatchTarget(null)
+    spawnHazardEffect(level, hazardId, ballState.pos, -depthEnd)
+    alien.react('slump')
+    crowd.react('groan')
     events.onResult(result)
+    ballMesh.visible = false
+    ballGlow.visible = false
+    postPhase = 'hazardBeam'
+    postPhaseT = 0
+    postFlightT = ballState.t
+    postFlightTimer = HAZARD_FX_DURATION + HAZARD_BEAM_DURATION
+  }
+
+  function hopWorldPos(k: number): THREE.Vector3 {
+    const level = currentLevel
+    if (!level || !hopFrom || !hopTo) return new THREE.Vector3()
+    const x = THREE.MathUtils.lerp(hopFrom.x, hopTo.x, k)
+    const y = THREE.MathUtils.lerp(hopFrom.y, hopTo.y, k)
+    const baseDepth = wellDepthAt(level, x, y, 0)
+    const arc = Math.sin(clamp(k, 0, 1) * Math.PI) * 1.1
+    return new THREE.Vector3(x, -baseDepth + arc, y)
+  }
+
+  function updatePostPhase(dt: number): void {
+    if (!postPhase || !currentLevel) return
+    const level = currentLevel
+    postPhaseT += dt
+
+    if (postPhase === 'goalSink') {
+      const k = Math.min(1, postPhaseT / GOAL_SINK_DURATION)
+      ballMesh.visible = true
+      ballGlow.visible = true
+      ballMesh.position.set(sinkStartPos.x, sinkStartPos.y - k * 0.3, sinkStartPos.z)
+      ballMesh.scale.setScalar(Math.max(0.001, 1 - k))
+      ballGlow.position.copy(ballMesh.position)
+      ballGlow.scale.setScalar(Math.max(0.001, 1 - k))
+      if (postPhaseT >= GOAL_SINK_DURATION) {
+        ballMesh.visible = false
+        ballGlow.visible = false
+        ballMesh.scale.setScalar(1)
+        ballGlow.scale.setScalar(1)
+        postPhase = null
+        flying = false
+        if (pendingResult) events.onResult(pendingResult)
+        pendingResult = null
+      }
+      return
+    }
+
+    if (postPhase === 'restWait') {
+      if (postPhaseT >= REST_WAIT_DURATION) {
+        postPhase = 'restHop'
+        postPhaseT = 0
+        hopDuration = alien.playHop()
+        alienHopK = 0
+      }
+      return
+    }
+
+    if (postPhase === 'restHop') {
+      const k = Math.min(1, postPhaseT / hopDuration)
+      alienHopK = k
+      if (Math.random() < 0.6 && !reducedMotion) {
+        const p = hopWorldPos(k)
+        alien.group.position.copy(p)
+        alien.group.updateMatrixWorld()
+        const flame = alien.group.localToWorld(ALIEN_BACKPACK_OFFSET.clone())
+        particlePool.spawn(
+          flame.x,
+          flame.y,
+          flame.z,
+          (Math.random() - 0.5) * 0.3,
+          -0.6 - Math.random() * 0.4,
+          (Math.random() - 0.5) * 0.3,
+          new THREE.Color(0xffb877),
+          0.05,
+          0.3,
+          { drag: 2 },
+        )
+      }
+      if (postPhaseT >= hopDuration) {
+        alienHopK = null
+        postPhase = null
+        flying = false
+        if (hopTo) lie = { x: hopTo.x, y: hopTo.y }
+        showRestingBall = true
+        ballMesh.visible = false
+        ballGlow.visible = false
+        events.onLieChange({ x: lie.x, y: lie.y })
+        applyAim(defaultAim(level, lie), false)
+        hopFrom = null
+        hopTo = null
+      }
+      return
+    }
+
+    if (postPhase === 'hazardBeam') {
+      if (postPhaseT >= HAZARD_FX_DURATION + HAZARD_BEAM_DURATION) {
+        postPhase = null
+        flying = false
+        showRestingBall = true
+        events.onLieChange({ x: lie.x, y: lie.y })
+        applyAim(defaultAim(level, lie), false)
+      }
+    }
   }
 
   function stepFlight(dt: number): void {
-    if (!flying || !probeState || !currentLevel) return
+    if (!flying || !currentLevel) return
+    if (pendingLaunchAim) {
+      swingTimer -= dt
+      if (swingTimer <= 0) performContact(pendingLaunchAim)
+      return
+    }
+    // `flying` stays true through the post-shot transition (sink, hop, beam-in) to block early
+    // strokes. Without this guard the loop re-detects the finished shot every frame and restarts
+    // that transition forever.
+    if (!ballState || postPhase) return
     accumulator += dt
-    while (accumulator >= DT && flying && probeState) {
-      step(currentLevel, probeState)
+    while (accumulator >= DT && flying && ballState && !postPhase) {
+      const prevBounces = ballState.bounces
+      step(currentLevel, ballState)
       accumulator -= DT
       flightStepCounter++
-      const check = checkOutcome(currentLevel, probeState)
+      if (ballState.bounces > prevBounces) {
+        const depth = wellDepthAt(currentLevel, ballState.pos.x, ballState.pos.y, ballState.t)
+        onBallBounce(ballState.pos, -depth + 0.14, ballState.lastBounceSpeed)
+      }
+      const check = checkOutcome(currentLevel, ballState)
       if (check.targetDistance < closestApproach) closestApproach = check.targetDistance
       if (flightStepCounter % 2 === 0) {
-        const depth = wellDepthAt(currentLevel, probeState.pos.x, probeState.pos.y, probeState.t)
-        activeTrail.addPoint(probeState.pos.x, -depth + 0.14, probeState.pos.y)
+        const depth = wellDepthAt(currentLevel, ballState.pos.x, ballState.pos.y, ballState.t)
+        activeTrail.addPoint(ballState.pos.x, -depth + 0.14, ballState.pos.y)
       }
       if (check.outcome) {
-        endFlight(check.outcome, check.crashedInto)
+        endShot(check.outcome, check.hazardId)
         break
       }
     }
@@ -1114,7 +1607,7 @@ export function createEngine(canvas: HTMLCanvasElement, events: EngineEvents): E
 
   // --- Per-frame visuals ----------------------------------------------------------------------------
   function currentTSim(dt: number): number {
-    if (flying && probeState) return probeState.t
+    if (flying && ballState) return ballState.t
     if (postFlightTimer > 0) {
       postFlightTimer -= dt
       if (postFlightTimer <= 0) {
@@ -1127,9 +1620,9 @@ export function createEngine(canvas: HTMLCanvasElement, events: EngineEvents): E
   }
 
   function currentProximity(level: Level): number {
-    if (!flying || !probeState) return 0
-    const tp = targetPosition(level.target, probeState.t)
-    const dist = Math.hypot(tp.x - probeState.pos.x, tp.y - probeState.pos.y)
+    if (!flying || !ballState) return 0
+    const tp = targetPosition(level.target, ballState.t)
+    const dist = Math.hypot(tp.x - ballState.pos.x, tp.y - ballState.pos.y)
     return clamp(1 - dist / (level.target.radius * 6), 0, 1)
   }
 
@@ -1137,29 +1630,33 @@ export function createEngine(canvas: HTMLCanvasElement, events: EngineEvents): E
     elapsed += dt
     ;(nebula.material as THREE.ShaderMaterial).uniforms.uTime.value = elapsed
     ;(stars.material as THREE.ShaderMaterial).uniforms.uTime.value = elapsed
-    if (bumper) bumper.material.uniforms.uTime.value = elapsed
+    if (courseWallMaterial) {
+      courseWallMaterial.uniforms.uTime.value = elapsed
+      courseWallMaterial.uniforms.uFlashAge.value += dt
+    }
 
     const level = currentLevel
     const tSim = currentTSim(dt)
     if (level) {
       for (const v of bodyVisuals) v.update(level, tSim, dt, elapsed)
+      teeVisual?.update(level, tSim, elapsed)
       gateFlash = Math.max(0, gateFlash - dt * 2.5)
-      gateVisual?.update(level, tSim, dt, elapsed, gateFlash, currentProximity(level))
+      cupVisual?.update(level, tSim, dt, elapsed, gateFlash, currentProximity(level))
       updateWellUniforms(tSim)
     }
 
-    if (flying && probeState && level) {
-      const depth = wellDepthAt(level, probeState.pos.x, probeState.pos.y, probeState.t)
-      probeMesh.position.set(probeState.pos.x, -depth + 0.14, probeState.pos.y)
-      probeGlow.position.copy(probeMesh.position)
+    if (flying && ballState && level) {
+      const depth = wellDepthAt(level, ballState.pos.x, ballState.pos.y, ballState.t)
+      ballMesh.position.set(ballState.pos.x, -depth + 0.14, ballState.pos.y)
+      ballGlow.position.copy(ballMesh.position)
       // ~2 comet sparks per frame while flying.
       for (let i = 0; i < 2; i++) {
         const a = Math.random() * Math.PI * 2
         const s = 0.2 + Math.random() * 0.4
         particlePool.spawn(
-          probeMesh.position.x,
-          probeMesh.position.y,
-          probeMesh.position.z,
+          ballMesh.position.x,
+          ballMesh.position.y,
+          ballMesh.position.z,
           Math.cos(a) * s,
           (Math.random() - 0.5) * s,
           Math.sin(a) * s,
@@ -1169,10 +1666,36 @@ export function createEngine(canvas: HTMLCanvasElement, events: EngineEvents): E
           { drag: 0.8 },
         )
       }
+      alien.setWatchTarget(ballMesh.position)
     }
+
+    if (postPhase) updatePostPhase(dt)
 
     aimGroup.visible = !flying
     if (!flying) updateAimIndicator()
+
+    if (level) {
+      if (alienHopK !== null) {
+        alien.group.position.copy(hopWorldPos(alienHopK))
+      } else {
+        const depth = wellDepthAt(level, lie.x, lie.y, tSim)
+        alien.group.position.set(lie.x, -depth, lie.y)
+      }
+      teeFillLight.position.set(lie.x - 2.5, 3, lie.y)
+
+      if (showRestingBall) {
+        const depth = wellDepthAt(level, lie.x, lie.y, tSim)
+        restBallMesh.position.set(lie.x, -depth + 0.14, lie.y)
+        restBallMesh.visible = true
+      } else {
+        restBallMesh.visible = false
+      }
+    }
+    alien.update(dt, elapsed)
+
+    // --- Living background + spectator stands -------------------------------------------------
+    backdrop.update(dt, elapsed, reducedMotion)
+    crowd.update(dt, elapsed, reducedMotion, flying && ballState ? ballMesh.position : null)
 
     updateEffects(dt)
     particlePool.update(dt)
@@ -1227,7 +1750,7 @@ export function createEngine(canvas: HTMLCanvasElement, events: EngineEvents): E
     const coarse = coarsePointerQuery.matches || w < 700
     if (coarse) bloomPass.setSize(Math.max(1, Math.floor(w / 2)), Math.max(1, Math.floor(h / 2)))
 
-    fitCameraToLevel()
+    if (currentLevel) snapCameraToLie(currentLevel, lie)
   }
 
   const resizeObserver = new ResizeObserver(() => handleResize())
@@ -1251,24 +1774,23 @@ export function createEngine(canvas: HTMLCanvasElement, events: EngineEvents): E
 
   function projectToPixel(world: THREE.Vector3, rect: DOMRect): { x: number; y: number } {
     const ndc = world.clone().project(camera)
-    return { x: ((ndc.x * 0.5 + 0.5) * rect.width) + rect.left, y: ((1 - (ndc.y * 0.5 + 0.5)) * rect.height) + rect.top }
+    return { x: (ndc.x * 0.5 + 0.5) * rect.width + rect.left, y: (1 - (ndc.y * 0.5 + 0.5)) * rect.height + rect.top }
   }
 
   /**
    * The launch direction is the world-plane direction whose on-screen projection is parallel to the
-   * screen-space drag vector: build the 2x2 Jacobian of screen offset per world offset at the home
-   * planet, invert it, and apply it to the drag vector so "drag toward the shot" feels literal.
+   * screen-space drag vector: build the 2x2 Jacobian of screen offset per world offset at the ball's
+   * lie, with the CURRENT camera, and invert it, so "drag toward the shot" feels literal from every
+   * vantage (the chase camera moves with the lie between shots).
    */
   function computeDragAngle(dragPxX: number, dragPxY: number): number {
     if (!currentLevel) return aim.angle
     const level = currentLevel
-    const home = homeBody(level)
-    const homePos = bodyPosition(home, 0)
     const rect = canvas.getBoundingClientRect()
     const sheetY = (x: number, z: number): number => -wellDepthAt(level, x, z, 0)
-    const P = new THREE.Vector3(homePos.x, sheetY(homePos.x, homePos.y), homePos.y)
-    const Px = new THREE.Vector3(homePos.x + 1, sheetY(homePos.x + 1, homePos.y), homePos.y)
-    const Pz = new THREE.Vector3(homePos.x, sheetY(homePos.x, homePos.y + 1), homePos.y + 1)
+    const P = new THREE.Vector3(lie.x, sheetY(lie.x, lie.y), lie.y)
+    const Px = new THREE.Vector3(lie.x + 1, sheetY(lie.x + 1, lie.y), lie.y)
+    const Pz = new THREE.Vector3(lie.x, sheetY(lie.x, lie.y + 1), lie.y + 1)
     const pP = projectToPixel(P, rect)
     const pPx = projectToPixel(Px, rect)
     const pPz = projectToPixel(Pz, rect)
@@ -1359,24 +1881,38 @@ export function createEngine(canvas: HTMLCanvasElement, events: EngineEvents): E
   // --- Public API ---------------------------------------------------------------------------------
   const api: EngineApi = {
     loadLevel(level: Level, options?: LoadOptions) {
-      // Abort any in-flight probe silently (no onResult), matching loadLevel's contract.
+      // Abort any in-flight shot/post-sequence silently (no onResult), matching loadLevel's contract.
       if (flying) {
         flying = false
-        probeState = null
-        probeMesh.visible = false
-        probeGlow.visible = false
+        pendingLaunchAim = null
+        ballState = null
+        postPhase = null
+        pendingResult = null
+        alienHopK = null
+        ballMesh.visible = false
+        ballGlow.visible = false
         activeTrail.reset()
       }
       currentLevel = level
       rebuildLevelVisuals(level)
-      if (!options?.keepTrails) {
-        aim = defaultAim(level)
-        ghostPool.clear()
-      }
-      aimDirty = true
+
+      const prevLie = lie
+      const keep =
+        !!options?.keepTrails &&
+        onFairway(level, prevLie) &&
+        !level.bodies.some((b) => {
+          const p = bodyPosition(b, 0)
+          return Math.hypot(p.x - prevLie.x, p.y - prevLie.y) <= b.radius
+        })
+      lie = keep ? { x: prevLie.x, y: prevLie.y } : { x: level.tee.x, y: level.tee.y }
+      if (!options?.keepTrails) ghostPool.clear()
+
+      showRestingBall = true
+      alien.setWatchTarget(null)
       postFlightTimer = 0
-      fitCameraToLevel()
-      updateAimIndicator()
+      events.onLieChange({ x: lie.x, y: lie.y })
+      snapCameraToLie(level, lie)
+      applyAim(defaultAim(level, lie), false)
     },
 
     setAim(next: Aim) {
@@ -1387,6 +1923,10 @@ export function createEngine(canvas: HTMLCanvasElement, events: EngineEvents): E
       return aim
     },
 
+    getLie() {
+      return { x: lie.x, y: lie.y }
+    },
+
     fire() {
       if (flying) return
       beginFlight(aim)
@@ -1395,9 +1935,16 @@ export function createEngine(canvas: HTMLCanvasElement, events: EngineEvents): E
     abort() {
       if (!flying) return
       flying = false
-      probeState = null
-      probeMesh.visible = false
-      probeGlow.visible = false
+      pendingLaunchAim = null
+      ballState = null
+      postPhase = null
+      pendingResult = null
+      alienHopK = null
+      ballMesh.visible = false
+      ballGlow.visible = false
+      showRestingBall = true
+      alien.setWatchTarget(null)
+      alien.setAimAngle(aim.angle)
       activeTrail.reset()
       aimDirty = true
     },
@@ -1432,32 +1979,46 @@ export function createEngine(canvas: HTMLCanvasElement, events: EngineEvents): E
         scene.remove(v.group)
         v.dispose()
       }
-      if (gateVisual) {
-        scene.remove(gateVisual.group)
-        gateVisual.dispose()
+      if (teeVisual) {
+        scene.remove(teeVisual.group)
+        teeVisual.dispose()
+      }
+      if (cupVisual) {
+        scene.remove(cupVisual.group)
+        cupVisual.dispose()
       }
       if (well) {
         scene.remove(well.mesh)
         well.geometry.dispose()
         well.material.dispose()
+        well.maskTexture.dispose()
       }
-      if (bumper) {
-        scene.remove(bumper.mesh)
-        bumper.geometry.dispose()
-        bumper.material.dispose()
+      if (courseStructure) {
+        scene.remove(courseStructure.group)
+        courseStructure.dispose()
       }
 
       activeTrail.dispose()
       ghostPool.clear()
       particlePool.dispose()
 
-      probeGeometry.dispose()
-      probeMaterial.dispose()
+      scene.remove(restBallMesh)
+      ballGeometry.dispose()
+      ballMaterial.dispose()
       glowMaterial.dispose()
       glowTexture.dispose()
 
+      scene.remove(alien.group)
+      alien.dispose()
+      scene.remove(backdrop.group)
+      backdrop.dispose()
+      scene.remove(crowd.group)
+      crowd.dispose()
+
       ribbonGeometry.dispose()
       ribbonMaterial.dispose()
+      predictCurveGeometry.dispose()
+      predictCurveMaterial.dispose()
       predictionGeometry.dispose()
       predictionMaterial.dispose()
 

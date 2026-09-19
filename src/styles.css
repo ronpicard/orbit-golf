@@ -89,6 +89,7 @@ a:focus-visible {
 .menu-panel,
 .result-card,
 .sandbox-palette,
+.minimap,
 .toast {
   background: var(--panel);
   backdrop-filter: blur(16px);
@@ -168,14 +169,15 @@ a:focus-visible {
 .hint-pill {
   position: absolute;
   top: calc(72px + var(--safe-top));
-  left: 50%;
-  transform: translateX(-50%);
-  max-width: min(90vw, 480px);
+  left: calc(12px + var(--safe-left));
+  /* Left-aligned (rather than centered) and capped so it never runs under the minimap, which
+     sits in the top-right corner at the same height. */
+  max-width: min(60vw, 420px);
   padding: 8px 16px;
   border-radius: 999px;
   font-size: 13px;
   color: var(--text-dim);
-  text-align: center;
+  text-align: left;
   opacity: 0;
   pointer-events: none;
   transition: opacity 220ms ease;
@@ -183,6 +185,110 @@ a:focus-visible {
 
 .hint-pill.visible {
   opacity: 1;
+}
+
+/* ---------- minimap ---------- */
+
+.minimap {
+  position: absolute;
+  top: calc(72px + var(--safe-top));
+  right: calc(12px + var(--safe-right));
+  border-radius: 12px;
+  overflow: hidden;
+  cursor: pointer;
+  z-index: 4;
+  animation: fade-slide-down 220ms ease;
+}
+
+.minimap svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.minimap-fairway {
+  fill: rgba(74, 222, 128, 0.28);
+  stroke: var(--accent);
+  stroke-width: 2;
+}
+
+.minimap-island {
+  fill: rgba(10, 6, 20, 0.92);
+  stroke: #c026d3;
+  stroke-width: 1.5;
+}
+
+.minimap-body {
+  stroke: rgba(0, 0, 0, 0.45);
+  stroke-width: 1;
+}
+
+.minimap-blackhole {
+  fill: #05010c;
+  stroke: var(--amber);
+  stroke-width: 2;
+}
+
+.minimap-rail {
+  fill: none;
+  stroke: rgba(255, 255, 255, 0.2);
+  stroke-width: 1;
+  stroke-dasharray: 3 3;
+}
+
+.minimap-cup {
+  fill: #0b0720;
+  stroke: #fff;
+  stroke-width: 1.5;
+}
+
+.minimap-flag-pole {
+  stroke: #fff;
+  stroke-width: 1;
+}
+
+.minimap-flag {
+  fill: var(--pink);
+}
+
+.minimap-tee {
+  fill: var(--yellow);
+}
+
+.minimap-aim-line {
+  stroke: #fff;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  opacity: 0.85;
+}
+
+.minimap-ball {
+  fill: #fff;
+}
+
+.minimap-ball-pulse {
+  fill: none;
+  stroke: #fff;
+  stroke-width: 1;
+  opacity: 0.7;
+  animation: minimap-pulse 1.6s ease-out infinite;
+}
+
+@keyframes minimap-pulse {
+  0% {
+    r: 0.22;
+    opacity: 0.7;
+  }
+  100% {
+    r: 1;
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .minimap-ball-pulse {
+    animation: none;
+  }
 }
 
 /* ---------- bottom bar ---------- */
@@ -870,6 +976,11 @@ a:focus-visible {
     bottom: calc(176px + var(--safe-bottom));
   }
 
+  /* The minimap shrinks to 120px here; keep the hint pill narrow enough to stay clear of it. */
+  .hint-pill {
+    max-width: calc(100vw - 120px - 48px);
+  }
+
   .bottom-bar {
     display: grid;
     grid-template-columns: 1fr 1fr;
@@ -928,6 +1039,10 @@ a:focus-visible {
     top: calc(52px + var(--safe-top));
     padding: 5px 12px;
     font-size: 12px;
+  }
+
+  .minimap {
+    top: calc(52px + var(--safe-top));
   }
 
   .bottom-bar {

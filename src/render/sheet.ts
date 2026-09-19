@@ -7,10 +7,10 @@ import { bodyPosition } from '../game/physics.ts'
  * identical smooth-clamped depth, so the ground mesh and everything resting on it agree exactly.
  */
 
-/** Steepness of the raw inverse-distance sum, before the smooth clamp. Unchanged from the old shader. */
-export const WELL_K = 0.12
+/** Steepness of the raw inverse-distance sum, before the smooth clamp. */
+export const WELL_K = 0.14
 /** Asymptotic maximum depth: raw potential is smoothly clamped to approach, never exceed, this. */
-export const WELL_D = 3.0
+export const WELL_D = 4.4
 
 /** Depth (a positive number of world units to push down) of the sheet at physics-plane (x, y), time t. */
 export function wellDepthAt(level: Level, x: number, y: number, t: number): number {

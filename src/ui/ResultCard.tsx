@@ -10,6 +10,8 @@ export interface ResultInfo {
   totalStrokes: number
   totalPar: number
   totalCompleted: number
+  /** True when the hole ended by hitting the ten-stroke limit rather than by holing out. */
+  pickedUp: boolean
 }
 
 interface ResultCardProps {
@@ -24,15 +26,21 @@ export default function ResultCard({ result, isLastLevel, onNext, onReplay, onMe
   return (
     <div className="modal-backdrop">
       <div className="result-card" role="dialog" aria-modal="true" aria-label="Hole complete">
-        <h2 className="result-title">Gate reached</h2>
+        <h2 className="result-title">{result.pickedUp ? 'Picked up' : 'Gate reached'}</h2>
         <p className="result-level-name">
           Hole {result.levelIndex + 1} - {result.levelName}
         </p>
-        <p className={`result-score ${scoreClass(result.strokes, result.par)}`}>{scoreLabel(result.strokes, result.par)}</p>
-        <p className="result-stats">
-          {result.strokes} launch{result.strokes === 1 ? '' : 'es'} &middot; Par {result.par}
-        </p>
-        {result.isNewBest && <p className="result-best">New best!</p>}
+        {result.pickedUp ? (
+          <p className="result-stats">Ten strokes is the limit - on to the next</p>
+        ) : (
+          <>
+            <p className={`result-score ${scoreClass(result.strokes, result.par)}`}>{scoreLabel(result.strokes, result.par)}</p>
+            <p className="result-stats">
+              {result.strokes} stroke{result.strokes === 1 ? '' : 's'} &middot; Par {result.par}
+            </p>
+          </>
+        )}
+        {result.isNewBest && !result.pickedUp && <p className="result-best">New best!</p>}
 
         {isLastLevel && (
           <div className="result-congrats">

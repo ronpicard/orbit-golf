@@ -2,6 +2,26 @@
 
 All notable changes to Orbit Golf are documented in this file, following the [Keep a Changelog](https://keepachangelog.com/) format.
 
+## [2.0.0] - 2026-09-19
+
+### Added
+
+- Real mini-golf rules: walled courses, a ball that banks off the walls and rolls to a stop under real friction, and a cup that lips out a putt crossing it too fast.
+- 18 rebuilt holes with walled layouts that gain bends and turns as the round goes on: a straight lane, a dogleg, a right angle, an S-curve, a chicane with island blocks, a U-turn, a bowl with a black hole, a zigzag, a funnel, a dead end, a ring around a central island, a moving cup, an inward spiral, a bridge between twin black holes, a slalom, a pinball room, and a grand tour.
+- A 3D green alien golfer who addresses the ball, swings, watches the putt, celebrates or slumps, and jetpack-hops to wherever the ball stops, with a camera that glides in behind it facing the hole.
+- A top-down minimap showing the whole course, the ball, and the aim.
+- A living backdrop: flying saucers, satellites, a space station, a tumbling asteroid field, astronauts, a ringed gas giant, comets, shooting stars, and floating stands of alien spectators who cheer and groan.
+- Synthesised crowd cheer and groan sounds alongside the club swing, wall bounce, and ball-in-cup sounds.
+- A beam-search multi-shot solver (`scripts/solve.ts`) that proves every hole finishable within par, with its solutions checked in and replayed by the test suite.
+
+### Changed
+
+- Touching a planet, moon, asteroid, or black hole, or leaving the course, is now a hazard: the stroke replays from where it started and still counts, instead of ending the attempt outright.
+- Ten strokes is now the limit per hole.
+- Gravity is stronger, so putts curve visibly, and because the ball slows as it rolls, the curve grows the longer a putt runs.
+- The rubber-sheet fairway now follows each hole's own walled outline, with neon bumper walls and a real cup with a flagstick, instead of a generic gravity-well grid.
+- This is a breaking rules change from 1.x's launch-a-probe format, hence the major version bump; best scores saved from 1.x refer to the old holes and don't carry over to the new ones.
+
 ## [1.1.0] - 2026-09-19
 
 ### Added
