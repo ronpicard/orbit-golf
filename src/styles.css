@@ -440,11 +440,20 @@ a:focus-visible {
     transform: translate(0, 0);
     opacity: 0;
   }
-  20% {
+  15% {
     opacity: 1;
   }
+  25% {
+    transform: translate(-6px, -6px);
+  }
+  40% {
+    transform: translate(6px, -12px);
+  }
+  55% {
+    transform: translate(0, -20px);
+  }
   100% {
-    transform: translate(44px, -44px);
+    transform: translate(0, -52px);
     opacity: 0;
   }
 }

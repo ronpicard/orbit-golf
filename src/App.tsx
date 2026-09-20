@@ -519,7 +519,6 @@ export default function App() {
               <SandboxPalette
                 tool={sandboxTool}
                 onSelectTool={setSandboxTool}
-                onClearTrails={() => engine?.clearTrails()}
                 onReset={handleSandboxReset}
               />
             )}

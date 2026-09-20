@@ -2,6 +2,14 @@
 
 All notable changes to Orbit Golf are documented in this file, following the [Keep a Changelog](https://keepachangelog.com/) format.
 
+## [2.1.0] - 2026-09-20
+
+### Changed
+
+- The camera now turns with the golfer, so you always face your shot instead of a fixed hole-facing view.
+- Dragging now turns left and right and adds power on an upward drag; a sideways-only drag looks around without putting.
+- Strokes no longer leave trails on the course.
+
 ## [2.0.1] - 2026-09-19
 
 ### Fixed

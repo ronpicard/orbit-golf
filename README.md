@@ -1,14 +1,14 @@
 # Orbit Golf
 
-Orbit Golf is a 3D mini-golf puzzle game that runs in the browser. Drag to aim and putt across a neon fairway walled off in deep space, bank your ball off the rails, and let real Newtonian gravity from planets, moons, asteroids, and black holes bend the roll until it drops in the cup. Play the [live demo](https://ronpicard.github.io/orbit-golf/) — it works on both phones and desktops.
+Orbit Golf is a 3D mini-golf puzzle game that runs in the browser. Drag to turn your alien golfer and aim, drag up for power, and putt across a neon fairway walled off in deep space, bank your ball off the rails, and let real Newtonian gravity from planets, moons, asteroids, and black holes bend the roll until it drops in the cup. The camera always sits behind the ball facing along your aim, turning with the golfer as you line up a shot. Play the [live demo](https://ronpicard.github.io/orbit-golf/) — it works on both phones and desktops.
 
 ## How to play
 
-- Drag in the direction you want to putt; release to swing. Drag further for more power. The on-screen arrow runs exactly parallel to your drag, so aiming is completely intuitive.
+- Drag left or right to turn the golfer and the view, and drag up to add power; release to putt. A sideways-only drag just turns and looks around without putting.
 - Fine-tune your aim with the angle and power nudge buttons, then press FIRE.
 - Keyboard controls: arrow keys adjust angle and power (hold Shift for a 5x step), `Space` or `Enter` swings or aborts a flight in progress, `R` restarts the hole, and `Escape` opens the menu.
-- A first-visit coach mark shows new players how dragging maps to the aim arrow, and a power meter fills as you drag.
-- The ball banks off the walls and rolls with real friction until it stops; play your next stroke from wherever it lies.
+- A first-visit coach mark shows new players how dragging maps to turning and power, and a power meter fills as you drag.
+- The ball banks off the walls and rolls with real friction until it stops; a short comet tail follows it while it rolls and vanishes once it settles, and you play your next stroke from wherever it lies.
 - A ball crossing the cup too fast lips out instead of dropping in.
 - Touching a planet, moon, asteroid, or black hole — or leaving the course — is a hazard: you replay the stroke from where it started, and the stroke still counts.
 - Ten strokes is the limit per hole; if you haven't holed out by then, the hole is picked up and scored at ten.
@@ -41,7 +41,7 @@ Eighteen holes make up a front nine and a back nine, shown as a scorecard on the
 | 17 | Pinball | 3 | An irregular bumper room with island blocks and two moons sweeping past on rails. |
 | 18 | Grand Tour | 4 | A four-turn corridor chaining three planets, a moon, and a black hole into one final run to the cup. |
 
-There's also a Sandbox for free experimentation: place small, medium, and large planets or black holes, erase bodies you don't want, clear trails, and try up to 10 bodies at once inside a walled rectangular room.
+There's also a Sandbox for free experimentation: place small, medium, and large planets or black holes, erase bodies you don't want, and try up to 10 bodies at once inside a walled rectangular room.
 
 Each hole is a walled fairway with neon bumper rails along the outside, a tee marker at the start, and a real cup with a flagstick where you putt in.
 

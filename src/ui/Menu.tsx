@@ -138,7 +138,7 @@ export default function Menu({ levels, progress, onPlay, onSelectLevel, onSandbo
         </div>
 
         <div className="how-to-play">
-          <p>Drag toward where you want to putt - drag further for more power, release to swing.</p>
+          <p>Drag left or right to turn, drag up for power, then release to putt.</p>
           <p>The ball bounces off walls and rolls to a stop. Play your next stroke from where it lies.</p>
           <p>Planets and black holes bend your putt. Touch one and you replay the stroke.</p>
           <p>Sink it in as few strokes as you can.</p>

@@ -189,7 +189,7 @@ export default function Hud({
             <span className="coach-dot coach-dot-2" />
             <span className="coach-dot coach-dot-1" />
           </div>
-          <p className="coach-caption">Drag toward the hole, release to putt</p>
+          <p className="coach-caption">Drag up for power, sideways to turn</p>
         </div>
       )}
 

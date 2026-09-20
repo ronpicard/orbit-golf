@@ -48,9 +48,9 @@ import {
   createWellMaterial,
 } from './shaders.ts'
 import { wellDepthAt } from './sheet.ts'
-import { ActiveTrail, GhostTrailPool } from './trails.ts'
+import { ActiveTrail } from './trails.ts'
 import { ParticlePool } from './particles.ts'
-import { COLOR_TEE } from './palette.ts'
+import { COLOR_AIM_HIGH, COLOR_AIM_LOW, COLOR_AIM_MID, COLOR_TEE } from './palette.ts'
 import { ALIEN_BACKPACK_OFFSET, createAlienGolfer } from './alien.ts'
 import type { AlienGolfer } from './alien.ts'
 import { createBackdrop } from './backdrop.ts'
@@ -58,7 +58,7 @@ import type { Backdrop } from './backdrop.ts'
 import { createCrowd } from './crowd.ts'
 import type { Crowd } from './crowd.ts'
 
-// --- Camera framing constants (first-person chase camera, behind the ball looking at the cup) ----
+// --- Camera framing constants (chase camera, behind the ball looking along the aim direction) -----
 const NDC_X_LIMIT = 0.9
 const NDC_Y_MAX = 0.62
 const CHASE_BACK_LANDSCAPE = 11
@@ -69,12 +69,13 @@ const CHASE_FOV_LANDSCAPE = 50
 const CHASE_FOV_PORTRAIT = 58
 const CHASE_PULLBACK_MAX = 1.6
 const CHASE_AHEAD_POINT = 9
-const CUP_NEAR_DIST = 2.5
 const LIE_GLIDE_DURATION = 0.9
 const CHASE_FOLLOW_LOOKAT_FRAC = 0.55
 const IDLE_SWAY = THREE.MathUtils.degToRad(0.4)
 const CRASH_SHAKE_DURATION = 0.35
 const CRASH_SHAKE_MAX = 0.15
+/** Critically-damped spring time constant for the camera yaw following the aim angle. */
+const CAMERA_YAW_TIME_CONSTANT = 0.12
 
 const DRAG_THRESHOLD_PX = 8
 const AIM_MIN_LENGTH = 1.2
@@ -84,6 +85,12 @@ const RIBBON_SAMPLES = 12
 const RIBBON_HALF_WIDTH = 0.09
 const PREDICT_SECONDS = 1.6
 const PREDICT_STRIDE = 4
+/** Radians of aim turn per full canvas width dragged horizontally. */
+const TURN_RANGE = 2.4
+/** Releasing a drag below this power is a "turn only" - it keeps the new angle but doesn't launch. */
+const LAUNCH_POWER_THRESHOLD = 0.08
+const POWER_BAR_WIDTH = 8
+const POWER_BAR_MAX_HEIGHT = 90
 
 // --- Post-shot outcome sequencing durations -------------------------------------------------------
 const GOAL_SINK_DURATION = 0.35
@@ -121,6 +128,35 @@ function seededRandom(seed: number): () => number {
 
 function easeInOutCubic(t: number): number {
   return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2
+}
+
+/**
+ * Critically damped spring toward a target angle (shortest way around the circle), given the
+ * current velocity state. `timeConstant` <= 0 snaps instantly (used for reduced motion).
+ */
+function smoothDampAngle(current: number, target: number, velocity: { v: number }, dt: number, timeConstant: number): number {
+  if (timeConstant <= 1e-4 || dt <= 0) {
+    velocity.v = 0
+    return target
+  }
+  let delta = current - target
+  delta = ((delta + Math.PI) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2) - Math.PI
+  const adjustedTarget = current - delta
+  const omega = 2 / timeConstant
+  const x = omega * dt
+  const exp = 1 / (1 + x + 0.48 * x * x + 0.235 * x * x * x)
+  const temp = (velocity.v + omega * delta) * dt
+  velocity.v = (velocity.v - omega * temp) * exp
+  return adjustedTarget + (delta + temp) * exp
+}
+
+/** Mixes the aim ribbon's low/mid/high power colors the same way the ribbon shader does. */
+function powerRibbonColor(power: number): THREE.Color {
+  const t1 = THREE.MathUtils.smoothstep(power, 0, 0.4)
+  const t2 = THREE.MathUtils.smoothstep(power, 0.4, 0.75)
+  const col = new THREE.Color(COLOR_AIM_LOW).lerp(new THREE.Color(COLOR_AIM_MID), t1)
+  col.lerp(new THREE.Color(COLOR_AIM_HIGH), t2)
+  return col
 }
 
 // --- Rail visuals: a faint circle showing a body/target's orbit, resting on the sheet -------------
@@ -737,12 +773,15 @@ export function createEngine(canvas: HTMLCanvasElement, events: EngineEvents): E
   strokeCircle.visible = false
   overlayScene.add(strokeCircle)
 
-  const strokeLineGeometry = new THREE.BufferGeometry()
-  strokeLineGeometry.setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array(6), 3))
-  const strokeLineMaterial = new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.6, depthTest: false })
-  const strokeLine = new THREE.Line(strokeLineGeometry, strokeLineMaterial)
-  strokeLine.visible = false
-  overlayScene.add(strokeLine)
+  // A short vertical bar rising from the pointer-down point, tracking the current drag power - the
+  // touch-guide replacement for the old drag-stroke line (which fed back on itself once the camera
+  // started turning with the aim; see the pointer input section below).
+  const strokeBarGeometry = new THREE.PlaneGeometry(1, 1)
+  strokeBarGeometry.translate(0, -0.5, 0)
+  const strokeBarMaterial = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.7, depthTest: false })
+  const strokeBar = new THREE.Mesh(strokeBarGeometry, strokeBarMaterial)
+  strokeBar.visible = false
+  overlayScene.add(strokeBar)
 
   // --- Particles -------------------------------------------------------------------------------------
   const particlePool = new ParticlePool()
@@ -753,7 +792,6 @@ export function createEngine(canvas: HTMLCanvasElement, events: EngineEvents): E
   const resolution = new THREE.Vector2(1, 1)
   const activeTrail = new ActiveTrail(resolution)
   scene.add(activeTrail.group)
-  const ghostPool = new GhostTrailPool(scene)
 
   // --- Ball: a glossy white golf ball ------------------------------------------------------------
   const ballGeometry = new THREE.SphereGeometry(BALL_RADIUS, 20, 16)
@@ -893,17 +931,22 @@ export function createEngine(canvas: HTMLCanvasElement, events: EngineEvents): E
   const sinkStartPos = new THREE.Vector3()
 
   // --- Chase camera state --------------------------------------------------------------------------
-  let chaseDir: Vec2 = { x: 1, y: 0 }
   const camPos = new THREE.Vector3()
   const camLookAt = new THREE.Vector3()
-  const glideFromPos = new THREE.Vector3()
-  const glideFromLookAt = new THREE.Vector3()
-  const glideToPos = new THREE.Vector3()
-  const glideToLookAt = new THREE.Vector3()
+  /** The lie position the camera frames around, glided smoothly between the old and new lie. */
+  const camFramingLie: Vec2 = { x: 0, y: 0 }
+  let glideFromLie: Vec2 = { x: 0, y: 0 }
+  let glideToLie: Vec2 = { x: 0, y: 0 }
   let glideT = 0
   let glideDuration = 0
   let currentFov = CHASE_FOV_LANDSCAPE
   let shakeTimer = 0
+  // Camera yaw: a critically damped spring toward the aim angle, so the camera always sits behind
+  // the ball looking along the aim direction. Locked to the aim the stroke was played with while a
+  // shot is in flight (see `flying`), so the view doesn't spin mid-shot.
+  let cameraYaw = 0
+  const cameraYawVelocity = { v: 0 }
+  let lockedYaw = 0
 
   const effects: Effect[] = []
 
@@ -1143,13 +1186,6 @@ export function createEngine(canvas: HTMLCanvasElement, events: EngineEvents): E
   }
 
   // --- Chase camera -----------------------------------------------------------------------------
-  function updateChaseDir(lieP: Vec2, cupP: Vec2): void {
-    const dx = cupP.x - lieP.x
-    const dy = cupP.y - lieP.y
-    const dist = Math.hypot(dx, dy)
-    if (dist >= CUP_NEAR_DIST) chaseDir = { x: dx / dist, y: dy / dist }
-  }
-
   function fitsChaseNdc(points: THREE.Vector3[], yMin: number): boolean {
     for (const p of points) {
       const proj = p.clone().project(camera)
@@ -1158,10 +1194,13 @@ export function createEngine(canvas: HTMLCanvasElement, events: EngineEvents): E
     return true
   }
 
-  /** Behind the ball looking toward the cup; pulled back (up to +60%) so the key points fit NDC. */
-  function computeChaseFraming(level: Level, lieP: Vec2, portrait: boolean): { pos: THREE.Vector3; lookAt: THREE.Vector3; fov: number } {
-    const cupP = targetPosition(level.target, 0)
-    updateChaseDir(lieP, cupP)
+  /** Behind the ball looking along `dir` (the aim direction); pulled back (up to +60%) so the key points fit NDC. */
+  function computeChaseFraming(
+    level: Level,
+    lieP: Vec2,
+    dir: Vec2,
+    portrait: boolean,
+  ): { pos: THREE.Vector3; lookAt: THREE.Vector3; fov: number } {
     const back = portrait ? CHASE_BACK_PORTRAIT : CHASE_BACK_LANDSCAPE
     const fov = portrait ? CHASE_FOV_PORTRAIT : CHASE_FOV_LANDSCAPE
     const yMin = portrait ? -0.52 : -0.62
@@ -1171,20 +1210,20 @@ export function createEngine(canvas: HTMLCanvasElement, events: EngineEvents): E
     camera.aspect = lastWidth / Math.max(1, lastHeight)
     camera.updateProjectionMatrix()
 
-    const aheadX = lieP.x + chaseDir.x * CHASE_AHEAD_POINT
-    const aheadY = lieP.y + chaseDir.y * CHASE_AHEAD_POINT
+    const aheadX = lieP.x + dir.x * CHASE_AHEAD_POINT
+    const aheadY = lieP.y + dir.y * CHASE_AHEAD_POINT
     const points = [
-      new THREE.Vector3(lieP.x - chaseDir.x * 0.4, lieY + 1.5, lieP.y - chaseDir.y * 0.4),
+      new THREE.Vector3(lieP.x - dir.x * 0.4, lieY + 1.5, lieP.y - dir.y * 0.4),
       new THREE.Vector3(lieP.x, lieY + BALL_RADIUS, lieP.y),
       new THREE.Vector3(aheadX, -wellDepthAt(level, aheadX, aheadY, 0), aheadY),
     ]
 
-    const lookAt = new THREE.Vector3(lieP.x + chaseDir.x * CHASE_LOOKAHEAD, lieY + 0.4, lieP.y + chaseDir.y * CHASE_LOOKAHEAD)
+    const lookAt = new THREE.Vector3(lieP.x + dir.x * CHASE_LOOKAHEAD, lieY + 0.4, lieP.y + dir.y * CHASE_LOOKAHEAD)
 
     function place(k: number): void {
       const horiz = back * k
       const height = horiz * Math.tan(CHASE_ELEVATION)
-      camera.position.set(lieP.x - chaseDir.x * horiz, lieY + height, lieP.y - chaseDir.y * horiz)
+      camera.position.set(lieP.x - dir.x * horiz, lieY + height, lieP.y - dir.y * horiz)
       camera.lookAt(lookAt)
       camera.updateMatrixWorld()
     }
@@ -1201,43 +1240,54 @@ export function createEngine(canvas: HTMLCanvasElement, events: EngineEvents): E
     return { pos: camera.position.clone(), lookAt, fov }
   }
 
-  function snapCameraToLie(level: Level, lieP: Vec2): void {
-    if (lastWidth === 0 || lastHeight === 0) return
-    const portrait = lastHeight > lastWidth
-    const framing = computeChaseFraming(level, lieP, portrait)
-    camPos.copy(framing.pos)
-    camLookAt.copy(framing.lookAt)
-    glideToPos.copy(framing.pos)
-    glideToLookAt.copy(framing.lookAt)
-    currentFov = framing.fov
+  /** Hard-snaps the camera's framing lie (level load, resize). Does not touch the yaw spring. */
+  function snapCameraToLie(lieP: Vec2): void {
+    glideFromLie = { x: lieP.x, y: lieP.y }
+    glideToLie = { x: lieP.x, y: lieP.y }
+    glideT = 0
     glideDuration = 0
   }
 
-  function glideCameraToLie(level: Level, lieP: Vec2): void {
-    if (lastWidth === 0 || lastHeight === 0) return
-    const portrait = lastHeight > lastWidth
-    const framing = computeChaseFraming(level, lieP, portrait)
-    glideFromPos.copy(camPos)
-    glideFromLookAt.copy(camLookAt)
-    glideToPos.copy(framing.pos)
-    glideToLookAt.copy(framing.lookAt)
-    currentFov = framing.fov
+  /** Glides the camera's framing lie to a new point (e.g. after a rest) over LIE_GLIDE_DURATION. */
+  function glideCameraToLie(lieP: Vec2): void {
+    glideFromLie = { x: camFramingLie.x, y: camFramingLie.y }
+    glideToLie = { x: lieP.x, y: lieP.y }
     glideT = 0
     glideDuration = LIE_GLIDE_DURATION
   }
 
   function updateCamera(dt: number): void {
-    if (glideDuration > 0 && !reducedMotion) {
-      glideT += dt
-      const t = Math.min(1, glideT / glideDuration)
-      const e = easeInOutCubic(t)
-      camPos.lerpVectors(glideFromPos, glideToPos, e)
-      camLookAt.lerpVectors(glideFromLookAt, glideToLookAt, e)
-      if (t >= 1) glideDuration = 0
-    } else {
-      camPos.copy(glideToPos)
-      camLookAt.copy(glideToLookAt)
-      glideDuration = 0
+    const level = currentLevel
+    if (level && lastWidth > 0 && lastHeight > 0) {
+      if (glideDuration > 0 && !reducedMotion) {
+        glideT += dt
+        const t = Math.min(1, glideT / glideDuration)
+        const e = easeInOutCubic(t)
+        camFramingLie.x = THREE.MathUtils.lerp(glideFromLie.x, glideToLie.x, e)
+        camFramingLie.y = THREE.MathUtils.lerp(glideFromLie.y, glideToLie.y, e)
+        if (t >= 1) glideDuration = 0
+      } else {
+        camFramingLie.x = glideToLie.x
+        camFramingLie.y = glideToLie.y
+        glideDuration = 0
+      }
+
+      // The camera always looks along the aim direction: spring the yaw toward it so turning feels
+      // smooth but tight, and lock it to the launch aim for the whole stroke so the view can't spin
+      // mid-shot.
+      const targetYaw = flying ? lockedYaw : aim.angle
+      if (reducedMotion) {
+        cameraYaw = targetYaw
+        cameraYawVelocity.v = 0
+      } else {
+        cameraYaw = smoothDampAngle(cameraYaw, targetYaw, cameraYawVelocity, dt, CAMERA_YAW_TIME_CONSTANT)
+      }
+      const dir: Vec2 = { x: Math.cos(cameraYaw), y: Math.sin(cameraYaw) }
+      const portrait = lastHeight > lastWidth
+      const framing = computeChaseFraming(level, camFramingLie, dir, portrait)
+      camPos.copy(framing.pos)
+      camLookAt.copy(framing.lookAt)
+      currentFov = framing.fov
     }
 
     let finalPos = camPos
@@ -1369,6 +1419,7 @@ export function createEngine(canvas: HTMLCanvasElement, events: EngineEvents): E
     const launchAim = clampAim(a)
     events.onLaunch(launchAim)
     aim = launchAim
+    lockedYaw = launchAim.angle
     flying = true
     ballState = null
     alien.setAimAngle(launchAim.angle)
@@ -1391,7 +1442,7 @@ export function createEngine(canvas: HTMLCanvasElement, events: EngineEvents): E
     activeTrail.reset()
     const depth0 = wellDepthAt(currentLevel, ballState.pos.x, ballState.pos.y, 0)
     const y0 = -depth0 + 0.14
-    activeTrail.addPoint(ballState.pos.x, y0, ballState.pos.y)
+    activeTrail.addPoint(ballState.pos.x, y0, ballState.pos.y, ballState.t)
     ballMesh.visible = true
     ballGlow.visible = true
     ballMesh.scale.setScalar(1)
@@ -1429,12 +1480,9 @@ export function createEngine(canvas: HTMLCanvasElement, events: EngineEvents): E
       end: { x: ballState.pos.x, y: ballState.pos.y },
       bounces: ballState.bounces,
     }
-    if (activeTrail.hasSegments()) {
-      const ghost = activeTrail.toGhost(outcome === 'goal' ? 'goal' : 'other')
-      ghost.setResolution(lastWidth, lastHeight)
-      ghostPool.add(ghost)
-    }
-    activeTrail.reset()
+    // Nothing survives a finished stroke: the comet tail fades out and clears itself, never
+    // leaving a mark on the course.
+    activeTrail.fadeOut()
     const depthEnd = wellDepthAt(level, ballState.pos.x, ballState.pos.y, ballState.t)
     const endY = -depthEnd + 0.14
 
@@ -1460,7 +1508,7 @@ export function createEngine(canvas: HTMLCanvasElement, events: EngineEvents): E
       ballGlow.position.copy(ballMesh.position)
       hopFrom = { x: lie.x, y: lie.y }
       hopTo = { x: result.end.x, y: result.end.y }
-      glideCameraToLie(level, hopTo)
+      glideCameraToLie(hopTo)
       postPhase = 'restWait'
       postPhaseT = 0
       postFlightT = ballState.t
@@ -1601,7 +1649,7 @@ export function createEngine(canvas: HTMLCanvasElement, events: EngineEvents): E
       if (check.targetDistance < closestApproach) closestApproach = check.targetDistance
       if (flightStepCounter % 2 === 0) {
         const depth = wellDepthAt(currentLevel, ballState.pos.x, ballState.pos.y, ballState.t)
-        activeTrail.addPoint(ballState.pos.x, -depth + 0.14, ballState.pos.y)
+        activeTrail.addPoint(ballState.pos.x, -depth + 0.14, ballState.pos.y, ballState.t)
       }
       if (check.outcome) {
         endShot(check.outcome, check.hazardId)
@@ -1634,6 +1682,7 @@ export function createEngine(canvas: HTMLCanvasElement, events: EngineEvents): E
 
   function updateVisuals(dt: number): void {
     elapsed += dt
+    activeTrail.update(dt)
     ;(nebula.material as THREE.ShaderMaterial).uniforms.uTime.value = elapsed
     ;(stars.material as THREE.ShaderMaterial).uniforms.uTime.value = elapsed
     if (courseWallMaterial) {
@@ -1711,7 +1760,7 @@ export function createEngine(canvas: HTMLCanvasElement, events: EngineEvents): E
   function renderFrame(): void {
     composer.render()
     strokeCircle.visible = dragging
-    strokeLine.visible = dragging
+    strokeBar.visible = dragging
     if (dragging) {
       renderer.autoClear = false
       renderer.render(overlayScene, overlayCamera)
@@ -1747,7 +1796,6 @@ export function createEngine(canvas: HTMLCanvasElement, events: EngineEvents): E
     renderer.setSize(w, h, false)
     composer.setSize(w, h)
     resolution.set(w, h)
-    ghostPool.setResolution(w, h)
     activeTrail.setResolution(w, h)
     overlayCamera.right = w
     overlayCamera.bottom = h
@@ -1756,7 +1804,7 @@ export function createEngine(canvas: HTMLCanvasElement, events: EngineEvents): E
     const coarse = coarsePointerQuery.matches || w < 700
     if (coarse) bloomPass.setSize(Math.max(1, Math.floor(w / 2)), Math.max(1, Math.floor(h / 2)))
 
-    if (currentLevel) snapCameraToLie(currentLevel, lie)
+    if (currentLevel) snapCameraToLie(lie)
   }
 
   const resizeObserver = new ResizeObserver(() => handleResize())
@@ -1770,6 +1818,10 @@ export function createEngine(canvas: HTMLCanvasElement, events: EngineEvents): E
   let activePointerId: number | null = null
   let dragging = false
   let startScreen = { x: 0, y: 0 }
+  /** The aim angle when this drag started; the drag adds a relative turn on top of it. */
+  let dragStartAngle = 0
+  /** Power before the drag began, restored after a turn-only drag so FIRE does not dribble the ball. */
+  let dragStartPower = 0.5
 
   function raycastGround(clientX: number, clientY: number, out: THREE.Vector3): THREE.Vector3 | null {
     const rect = canvas.getBoundingClientRect()
@@ -1778,65 +1830,26 @@ export function createEngine(canvas: HTMLCanvasElement, events: EngineEvents): E
     return raycaster.ray.intersectPlane(groundPlane, out)
   }
 
-  function projectToPixel(world: THREE.Vector3, rect: DOMRect): { x: number; y: number } {
-    const ndc = world.clone().project(camera)
-    return { x: (ndc.x * 0.5 + 0.5) * rect.width + rect.left, y: (1 - (ndc.y * 0.5 + 0.5)) * rect.height + rect.top }
-  }
-
-  /**
-   * The launch direction is the world-plane direction whose on-screen projection is parallel to the
-   * screen-space drag vector: build the 2x2 Jacobian of screen offset per world offset at the ball's
-   * lie, with the CURRENT camera, and invert it, so "drag toward the shot" feels literal from every
-   * vantage (the chase camera moves with the lie between shots).
-   */
-  function computeDragAngle(dragPxX: number, dragPxY: number): number {
-    if (!currentLevel) return aim.angle
-    const level = currentLevel
-    const rect = canvas.getBoundingClientRect()
-    const sheetY = (x: number, z: number): number => -wellDepthAt(level, x, z, 0)
-    const P = new THREE.Vector3(lie.x, sheetY(lie.x, lie.y), lie.y)
-    const Px = new THREE.Vector3(lie.x + 1, sheetY(lie.x + 1, lie.y), lie.y)
-    const Pz = new THREE.Vector3(lie.x, sheetY(lie.x, lie.y + 1), lie.y + 1)
-    const pP = projectToPixel(P, rect)
-    const pPx = projectToPixel(Px, rect)
-    const pPz = projectToPixel(Pz, rect)
-    const j11 = pPx.x - pP.x
-    const j21 = pPx.y - pP.y
-    const j12 = pPz.x - pP.x
-    const j22 = pPz.y - pP.y
-    const det = j11 * j22 - j12 * j21
-
-    let dx: number
-    let dz: number
-    if (Math.abs(det) < 1e-6) {
-      const camRight = new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion)
-      camRight.y = 0
-      if (camRight.lengthSq() < 1e-9) camRight.set(1, 0, 0)
-      camRight.normalize()
-      const camForward = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion)
-      camForward.y = 0
-      if (camForward.lengthSq() < 1e-9) camForward.set(0, 0, -1)
-      camForward.normalize()
-      dx = camRight.x * dragPxX - camForward.x * dragPxY
-      dz = camRight.z * dragPxX - camForward.z * dragPxY
-    } else {
-      const invDet = 1 / det
-      dx = (j22 * dragPxX - j12 * dragPxY) * invDet
-      dz = (-j21 * dragPxX + j11 * dragPxY) * invDet
-    }
-    const len = Math.hypot(dx, dz) || 1
-    return Math.atan2(dz / len, dx / len)
-  }
-
   function onPointerDown(e: PointerEvent): void {
     if (flying || activePointerId !== null) return
     if (e.pointerType === 'mouse' && e.button !== 0) return
     activePointerId = e.pointerId
     dragging = false
     startScreen = { x: e.clientX, y: e.clientY }
+    dragStartAngle = aim.angle
+    dragStartPower = aim.power
     canvas.setPointerCapture(e.pointerId)
   }
 
+  /**
+   * Camera-independent, relative drag mapping: since the camera now turns with the aim, mapping
+   * "drag toward the shot" against the current camera (as before) would feed back on itself and
+   * spin. Horizontal drag turns the aim relative to where it started; vertical drag sets power.
+   * Dragging right moves the aim angle up (see the sign note on TURN_RANGE's usage below) - with
+   * the camera positioned behind the ball looking along the aim direction, increasing the physics
+   * angle rotates that direction toward the camera's own right, so a rightward drag turns the arrow
+   * (and the view) to the right on screen, matching the finger.
+   */
   function onPointerMove(e: PointerEvent): void {
     if (activePointerId === null || e.pointerId !== activePointerId) return
     const dx = e.clientX - startScreen.x
@@ -1844,16 +1857,16 @@ export function createEngine(canvas: HTMLCanvasElement, events: EngineEvents): E
     const pixelDist = Math.hypot(dx, dy)
     if (!dragging && pixelDist < DRAG_THRESHOLD_PX) return
     dragging = true
-    const angle = computeDragAngle(dx, dy)
     const rect = canvas.getBoundingClientRect()
-    const power = clamp(pixelDist / (POWER_DRAG_DIVISOR * Math.min(rect.width, rect.height)), MIN_POWER, 1)
+    const angle = dragStartAngle + (dx / rect.width) * TURN_RANGE
+    const power = clamp(-dy / (POWER_DRAG_DIVISOR * Math.min(rect.width, rect.height)), MIN_POWER, 1)
     applyAim({ angle, power }, true)
 
     strokeCircle.position.set(startScreen.x, startScreen.y, 0)
-    const posAttr = strokeLineGeometry.attributes.position as THREE.BufferAttribute
-    posAttr.setXYZ(0, startScreen.x, startScreen.y, 0)
-    posAttr.setXYZ(1, e.clientX, e.clientY, 0)
-    posAttr.needsUpdate = true
+    const barHeight = Math.max(2, power * POWER_BAR_MAX_HEIGHT)
+    strokeBar.scale.set(POWER_BAR_WIDTH, barHeight, 1)
+    strokeBar.position.set(startScreen.x, startScreen.y, 0)
+    strokeBarMaterial.color.copy(powerRibbonColor(power))
   }
 
   function onPointerUp(e: PointerEvent): void {
@@ -1863,7 +1876,12 @@ export function createEngine(canvas: HTMLCanvasElement, events: EngineEvents): E
     activePointerId = null
     dragging = false
     if (wasDragging) {
-      beginFlight(aim)
+      if (aim.power >= LAUNCH_POWER_THRESHOLD) {
+        beginFlight(aim)
+      } else {
+        // Turn-only drag: keep the new angle and the power the player had set before it.
+        applyAim({ angle: aim.angle, power: dragStartPower }, false)
+      }
     } else if (currentLevel) {
       const hit = new THREE.Vector3()
       if (raycastGround(e.clientX, e.clientY, hit)) {
@@ -1911,14 +1929,18 @@ export function createEngine(canvas: HTMLCanvasElement, events: EngineEvents): E
           return Math.hypot(p.x - prevLie.x, p.y - prevLie.y) <= b.radius
         })
       lie = keep ? { x: prevLie.x, y: prevLie.y } : { x: level.tee.x, y: level.tee.y }
-      if (!options?.keepTrails) ghostPool.clear()
 
       showRestingBall = true
       alien.setWatchTarget(null)
       postFlightTimer = 0
       events.onLieChange({ x: lie.x, y: lie.y })
-      snapCameraToLie(level, lie)
-      applyAim(defaultAim(level, lie), false)
+      const initialAim = defaultAim(level, lie)
+      // Snap the yaw straight to the fresh aim - a level load is a hard reset, not something to spring into.
+      cameraYaw = initialAim.angle
+      cameraYawVelocity.v = 0
+      lockedYaw = initialAim.angle
+      snapCameraToLie(lie)
+      applyAim(initialAim, false)
     },
 
     setAim(next: Aim) {
@@ -1951,13 +1973,12 @@ export function createEngine(canvas: HTMLCanvasElement, events: EngineEvents): E
       showRestingBall = true
       alien.setWatchTarget(null)
       alien.setAimAngle(aim.angle)
-      activeTrail.reset()
+      activeTrail.fadeOut()
       aimDirty = true
     },
 
     clearTrails() {
       activeTrail.reset()
-      ghostPool.clear()
     },
 
     isFlying() {
@@ -2005,7 +2026,6 @@ export function createEngine(canvas: HTMLCanvasElement, events: EngineEvents): E
       }
 
       activeTrail.dispose()
-      ghostPool.clear()
       particlePool.dispose()
 
       scene.remove(restBallMesh)
@@ -2029,8 +2049,8 @@ export function createEngine(canvas: HTMLCanvasElement, events: EngineEvents): E
       predictionMaterial.dispose()
 
       strokeCircleMaterial.dispose()
-      strokeLineGeometry.dispose()
-      strokeLineMaterial.dispose()
+      strokeBarGeometry.dispose()
+      strokeBarMaterial.dispose()
 
       nebula.geometry.dispose()
       ;(nebula.material as THREE.Material).dispose()

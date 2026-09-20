@@ -198,7 +198,7 @@ export const SANDBOX_LEVEL: Level = makeLevel({
 const l01 = makeLevel({
   id: 'l01',
   name: 'First Launch',
-  hint: 'Drag toward the flag and let it fly — a lone planet nearby will nudge a lazy putt off line.',
+  hint: 'Turn to face the flag and let it fly — a lone planet nearby will nudge a lazy putt off line.',
   par: 3,
   tee: v(-14, 0),
   course: corridor([v(-14, 0), v(14, 0)], { width: 2.8 }),
@@ -213,7 +213,7 @@ const l01 = makeLevel({
 const l02 = makeLevel({
   id: 'l02',
   name: 'Gentle Bend',
-  hint: 'Drag toward the far corner and let the inside planet curl your putt round the bend.',
+  hint: 'Aim at the far corner and let the inside planet curl your putt round the bend.',
   par: 3,
   tee: v(-14, -3),
   course: corridor([v(-14, -3), v(-1, -3), v(9, 7)], { width: 3 }),
@@ -228,7 +228,7 @@ const l02 = makeLevel({
 const l03 = makeLevel({
   id: 'l03',
   name: 'Right Angle',
-  hint: 'Drag toward the corner and bank off the chamfer, or let the planet swing you round it.',
+  hint: 'Aim at the corner and bank off the chamfer, or let the planet swing you round it.',
   par: 3,
   tee: v(-14, -4),
   course: corridor([v(-14, -4), v(2, -4), v(2, 8)], { width: 2.8 }),
@@ -243,7 +243,7 @@ const l03 = makeLevel({
 const l04 = makeLevel({
   id: 'l04',
   name: 'Slingshot',
-  hint: 'Drag past either shoulder of the planet and let its gravity fling you on toward the cup.',
+  hint: 'Aim past either shoulder of the planet and let its gravity fling you on toward the cup.',
   par: 3,
   tee: v(-14, 0),
   course: corridor([v(-14, 0), v(14, 0)], { width: 3.4 }),
@@ -258,7 +258,7 @@ const l04 = makeLevel({
 const l05 = makeLevel({
   id: 'l05',
   name: 'S-Curve',
-  hint: 'Drag along the near wall and let each bend carry your putt into the next.',
+  hint: 'Putt along the near wall and let each bend carry your ball into the next.',
   par: 3,
   tee: v(-14, -5),
   course: corridor([v(-14, -5), v(-5, -5), v(5, 5), v(14, 5)], { width: 2.2 }),
@@ -273,7 +273,7 @@ const l05 = makeLevel({
 const l06 = makeLevel({
   id: 'l06',
   name: 'Chicane',
-  hint: 'Drag through the gap between the blocks and time your run past the patrolling moon.',
+  hint: 'Aim through the gap between the blocks and time your run past the patrolling moon.',
   par: 3,
   tee: v(-14, 0),
   course: corridor([v(-14, 0), v(14, 0)], { width: 4.6 }),
@@ -295,7 +295,7 @@ const l06 = makeLevel({
 const l07 = makeLevel({
   id: 'l07',
   name: 'U-Turn',
-  hint: 'Drag out along the far lane and let the pivot planet curl you back toward home.',
+  hint: 'Putt out along the far lane and let the pivot planet curl you back toward home.',
   par: 4,
   tee: v(-14, 3),
   course: corridor([v(-14, 3), v(6, 3), v(6, -3), v(-14, -3)], { width: 1.9 }),
@@ -310,7 +310,7 @@ const l07 = makeLevel({
 const l08 = makeLevel({
   id: 'l08',
   name: 'Event Horizon',
-  hint: 'Drag wide around the black hole and let the bowl carry you on toward the cup.',
+  hint: 'Aim wide around the black hole and let the bowl carry you on toward the cup.',
   par: 2,
   tee: v(-9.5, 0),
   course: rect(0, 0, 11, 8),
@@ -325,7 +325,7 @@ const l08 = makeLevel({
 const l09 = makeLevel({
   id: 'l09',
   name: 'Zigzag',
-  hint: 'Drag into each turn in sequence and ride the chamfers all the way home.',
+  hint: 'Play into each turn in sequence and ride the chamfers all the way home.',
   par: 3,
   tee: v(-16, -6),
   course: corridor([v(-16, -6), v(-4, -6), v(-4, 2), v(8, 2), v(8, 8)], { width: 2 }),
@@ -340,7 +340,7 @@ const l09 = makeLevel({
 const l10 = makeLevel({
   id: 'l10',
   name: 'The Funnel',
-  hint: 'Drag straight through the narrow gate between the two small planets.',
+  hint: 'Aim straight through the narrow gate between the two small planets.',
   par: 3,
   tee: v(-14, 0),
   course: corridor([v(-14, 0), v(0, 0), v(14, 0)], { width: [4, 1.8, 3.2] }),
@@ -369,7 +369,7 @@ const T_COURSE: Vec2[] = [
 const l11 = makeLevel({
   id: 'l11',
   name: 'Dead End',
-  hint: 'Drag down the south branch toward the cup and leave the black hole to the north alone.',
+  hint: 'Turn down the south branch toward the cup and leave the black hole to the north alone.',
   par: 3,
   tee: v(-14, 0),
   course: T_COURSE,
@@ -384,7 +384,7 @@ const l11 = makeLevel({
 const l12 = makeLevel({
   id: 'l12',
   name: 'The Ring',
-  hint: 'Drag up over the top or down under the bottom and let the ring planets sling you around.',
+  hint: 'Go over the top or under the bottom and let the ring planets sling you around.',
   par: 3,
   tee: v(-9, 0),
   course: rect(0, 0, 12, 9),
@@ -402,7 +402,7 @@ const l12 = makeLevel({
 const l13 = makeLevel({
   id: 'l13',
   name: 'Moving Green',
-  hint: 'Drag into the bend and lead the moving cup as it circles the far room.',
+  hint: 'Play into the bend and lead the moving cup as it circles the far room.',
   par: 3,
   tee: v(-16, -3),
   course: corridor([v(-16, -3), v(-2, -3), v(6, 5)], { width: [2.1, 2.1, 4.6], endPad: 3 }),
@@ -421,7 +421,7 @@ const l13 = makeLevel({
 const l14 = makeLevel({
   id: 'l14',
   name: 'Inward Spiral',
-  hint: 'Drag around each arm of the spiral and let the last planet curl you into the centre.',
+  hint: 'Work around each arm of the spiral and let the last planet curl you into the centre.',
   par: 5,
   tee: v(-15, -8),
   course: corridor([v(-15, -8), v(13, -8), v(13, 6), v(-9, 6), v(-9, -2)], { width: 2 }),
@@ -436,7 +436,7 @@ const l14 = makeLevel({
 const l15 = makeLevel({
   id: 'l15',
   name: 'The Bridge',
-  hint: 'Drag straight down the centre line and thread the gap between the two black holes.',
+  hint: 'Aim straight down the centre line and thread the gap between the two black holes.',
   par: 3,
   tee: v(-14, 0),
   course: corridor([v(-14, 0), v(14, 0)], { width: 3.8 }),
@@ -454,7 +454,7 @@ const l15 = makeLevel({
 const l16 = makeLevel({
   id: 'l16',
   name: 'Slalom',
-  hint: 'Drag a weaving line through the alternating planets and the blocks between them.',
+  hint: 'Pick a weaving line through the alternating planets and the blocks between them.',
   par: 3,
   tee: v(-16, 0),
   course: corridor([v(-16, 0), v(16, 0)], { width: 4 }),
@@ -485,7 +485,7 @@ const PINBALL_COURSE: Vec2[] = [
 const l17 = makeLevel({
   id: 'l17',
   name: 'Pinball',
-  hint: 'Drag between the bumpers and slip past the moons on your way to the cup.',
+  hint: 'Aim between the bumpers and slip past the moons on your way to the cup.',
   par: 3,
   tee: v(-11, -3),
   course: PINBALL_COURSE,
@@ -508,7 +508,7 @@ const l17 = makeLevel({
 const l18 = makeLevel({
   id: 'l18',
   name: 'Grand Tour',
-  hint: 'Drag through each bend in turn and carry your line past the black hole to the cup.',
+  hint: 'Play through each bend in turn and carry your line past the black hole to the cup.',
   par: 4,
   tee: v(-16, -8),
   course: corridor([v(-16, -8), v(-4, -8), v(-4, -2), v(6, -2), v(6, 4), v(16, 4)], { width: 2.4 }),
