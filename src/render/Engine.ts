@@ -76,8 +76,6 @@ const CHASE_FOLLOW_LOOKAT_FRAC = 0.55
 const IDLE_SWAY = THREE.MathUtils.degToRad(0.4)
 const CRASH_SHAKE_DURATION = 0.35
 const CRASH_SHAKE_MAX = 0.15
-/** How long the chase camera follows the ball hard after a wormhole warp, to catch up quickly. */
-const WARP_SNAP_DURATION = 0.4
 /** Critically-damped spring time constant for the camera yaw following the aim angle. */
 const CAMERA_YAW_TIME_CONSTANT = 0.12
 
@@ -1018,8 +1016,6 @@ export function createEngine(canvas: HTMLCanvasElement, events: EngineEvents): E
   let hazardFreezeClock = 0
   const hazardSuckFrom = new THREE.Vector3()
 
-  /** Camera catch-up after a warp: for a short window the chase camera follows the ball hard. */
-  let warpSnapTimer = 0
 
   // --- Chase camera state --------------------------------------------------------------------------
   const camPos = new THREE.Vector3()
@@ -1435,17 +1431,12 @@ export function createEngine(canvas: HTMLCanvasElement, events: EngineEvents): E
       currentFov = framing.fov
     }
 
-    if (warpSnapTimer > 0) warpSnapTimer = Math.max(0, warpSnapTimer - dt)
-
     let finalPos = camPos
     let finalLookAt = camLookAt
     if (flying && ballState && !reducedMotion) {
-      // After a wormhole warp the ball jumps instantly; follow it hard for a short window instead
-      // of the usual slow chase-camera lag, so the view catches up within about WARP_SNAP_DURATION.
-      const followK = warpSnapTimer > 0 ? 0.85 : 0.05
-      const lookAtK = warpSnapTimer > 0 ? 0.95 : CHASE_FOLLOW_LOOKAT_FRAC
-      finalLookAt = camLookAt.clone().lerp(ballMesh.position, lookAtK)
-      finalPos = camPos.clone().lerp(ballMesh.position, followK)
+      // The view stays put through a wormhole warp: only the usual gentle follow applies.
+      finalLookAt = camLookAt.clone().lerp(ballMesh.position, CHASE_FOLLOW_LOOKAT_FRAC)
+      finalPos = camPos.clone().lerp(ballMesh.position, 0.05)
     }
 
     camera.fov = currentFov
@@ -1844,7 +1835,6 @@ export function createEngine(canvas: HTMLCanvasElement, events: EngineEvents): E
         events.onWarp()
         activeTrail.reset()
         spawnWarpEffects(currentLevel, ballState.pos, ballState.clock)
-        warpSnapTimer = WARP_SNAP_DURATION
       }
       const check = checkOutcome(currentLevel, ballState)
       if (check.targetDistance < closestApproach) closestApproach = check.targetDistance

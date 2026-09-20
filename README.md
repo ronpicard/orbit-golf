@@ -10,7 +10,7 @@ Orbit Golf is a 3D mini-golf puzzle game that runs in the browser. Drag to turn 
 - A first-visit coach mark shows new players how dragging maps to turning and power, and a power meter fills as you drag.
 - The ball banks off the walls and rolls with real friction until it stops; a short comet tail follows it while it rolls and vanishes once it settles, and you play your next stroke from wherever it lies.
 - A ball crossing the cup too fast lips out instead of dropping in.
-- Touching a planet, moon, asteroid, or black hole, rolling through a saucer's beam, or leaving the course is a hazard: you replay the stroke from where it started, and the stroke still counts.
+- Planets, moons, and asteroids are solid: the ball bounces off them like a round bumper. Falling into a black hole, rolling through a saucer's beam, or leaving the course is a hazard: you replay the stroke from where it started, and the stroke still counts.
 - A wormhole carries the ball from one mouth to its twin at the same speed and heading. The aim preview stops at the mouth.
 - Ten strokes is the limit per hole; if you haven't holed out by then, the hole is picked up and scored at ten.
 - Scores use golf names: hole in one, eagle, birdie, par, bogey.

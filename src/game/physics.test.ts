@@ -5,10 +5,12 @@ import {
   BALL_RADIUS,
   ROLL_DECEL,
   WALL_RESTITUTION,
+  BODY_RESTITUTION,
   CAPTURE_SPEED,
   MAX_SHOT_TIME,
   railPosition,
   patrolPosition,
+  bodyPosition,
   clampAim,
   courseBounds,
   pointInPolygon,
@@ -412,48 +414,93 @@ test('a putt crossing the cup faster than CAPTURE_SPEED skips over (not a goal a
 // Hazards
 // ---------------------------------------------------------------------------
 
-test('a putt into a planet ends hazard with that body id', () => {
+test('a putt straight into a planet bounces back', () => {
   const planet = bodyFixture({ id: 'planet-x', pos: { x: 60, y: 20 }, mu: 5, radius: 2 })
   const level = makeLevel({ bodies: [planet], target: { pos: { x: -1000, y: -1000 }, radius: 0.01 } })
   const result = simulate(level, { x: 50, y: 20 }, { angle: 0, power: 1 })
-  assert.equal(result.outcome, 'hazard')
-  assert.equal(result.hazardId, 'planet-x')
+  assert.notEqual(result.outcome, 'hazard')
+  assert.ok(result.bounces >= 1)
 })
 
-test('an asteroid (mu 0) is a hazard but adds no acceleration', () => {
-  const asteroid = bodyFixture({ id: 'ast-1', kind: 'asteroid', mu: 0, pos: { x: 5, y: 5 }, radius: 1 })
-  const level = makeLevel({ bodies: [asteroid] })
+test('a putt straight into a black hole ends hazard with that body id', () => {
+  const hole = bodyFixture({ id: 'hole-x', kind: 'blackhole', pos: { x: 60, y: 20 }, mu: 5, radius: 2 })
+  const level = makeLevel({ bodies: [hole], target: { pos: { x: -1000, y: -1000 }, radius: 0.01 } })
+  const result = simulate(level, { x: 50, y: 20 }, { angle: 0, power: 1 })
+  assert.equal(result.outcome, 'hazard')
+  assert.equal(result.hazardId, 'hole-x')
+})
+
+test('an asteroid is solid (the ball bounces, no hazard) and adds no acceleration', () => {
+  const asteroid = bodyFixture({ id: 'ast-1', kind: 'asteroid', mu: 0, pos: { x: 60, y: 20 }, radius: 2 })
+  const level = makeLevel({ bodies: [asteroid], target: { pos: { x: -1000, y: -1000 }, radius: 0.01 } })
   const out: Vec2 = { x: 0, y: 0 }
   acceleration(level, 0, 0, 0, out)
   assert.equal(out.x, 0)
   assert.equal(out.y, 0)
 
-  const s: BallState = {
-    pos: { x: 3, y: 5 },
-    vel: { x: 1, y: 0 },
-    t: 0,
-    clock: 0,
-    warps: 0,
-    inWormhole: false,
-    bounces: 0,
-    lastBounceSpeed: 0,
-  }
-  const outcome = checkOutcome(level, s)
-  // Not yet within the hazard radius, so not yet a hazard.
-  assert.equal(outcome.outcome, null)
-  s.pos.x = 5.5
-  const outcome2 = checkOutcome(level, s)
-  assert.equal(outcome2.outcome, 'hazard')
-  assert.equal(outcome2.hazardId, 'ast-1')
+  const result = simulate(level, { x: 50, y: 20 }, { angle: 0, power: 1 })
+  assert.notEqual(result.outcome, 'hazard')
+  assert.ok(result.bounces >= 1)
 })
 
-test('a moon on a rail is only a hazard when it is actually there at that time', () => {
-  const rail: Rail = { center: { x: 60, y: 20 }, radius: 10, period: 20, phase: 0 }
+test('a moon on a rail only deflects the ball when it is actually there at that time', () => {
+  // A slow-moving rail: over the few seconds a shot takes, the body barely moves, so the starting
+  // clock alone decides whether it is on the ball's path.
+  const rail: Rail = { center: { x: 60, y: 20 }, radius: 10, period: 1000, phase: 0 }
   const moon = bodyFixture({ id: 'moon-1', kind: 'moon', mu: 0, radius: 2, pos: { x: 0, y: 0 }, rail })
-  const level = makeLevel({ bodies: [moon] })
-  // At clock=0 the moon sits at (70, 20) (center + radius on the phase=0 direction).
-  const sAt: BallState = {
-    pos: { x: 70, y: 20 },
+  const level = makeLevel({ bodies: [moon], target: { pos: { x: -1000, y: -1000 }, radius: 0.01 } })
+  const from = { x: 50, y: 20 }
+  const aim: Aim = { angle: 0, power: 1 }
+  // At clock=0 the moon sits at (70, 20), directly on the path, so the ball should be deflected.
+  const atZero = simulate(level, from, aim, 0)
+  // A quarter period later the moon sits at (60, 30), well off the path.
+  const atQuarter = simulate(level, from, aim, 250)
+  assert.ok(atZero.bounces >= 1, 'moon at (70, 20) should have deflected the ball')
+  assert.notEqual(atZero.end.x, atQuarter.end.x)
+})
+
+// ---------------------------------------------------------------------------
+// Solid-body bounces
+// ---------------------------------------------------------------------------
+
+test('a glancing bounce off a planet keeps the along-surface speed and reflects the into-surface speed', () => {
+  const asteroid = bodyFixture({ id: 'ast-1', kind: 'asteroid', mu: 0, pos: { x: 60, y: 20 }, radius: 2 })
+  const level = makeLevel({ bodies: [asteroid], target: { pos: { x: -1000, y: -1000 }, radius: 0.01 } })
+  // Offset from the body's centerline so the impact is glancing rather than head-on.
+  const from = { x: 50, y: 18.5 }
+  const s = launchState(level, from, { angle: 0, power: 1 }, 0)
+  let preVel: Vec2 = { x: s.vel.x, y: s.vel.y }
+  for (let i = 0; i < 3000 && s.bounces === 0; i++) {
+    preVel = { x: s.vel.x, y: s.vel.y }
+    step(level, s)
+  }
+  assert.equal(s.bounces, 1)
+
+  const reach = asteroid.radius + BALL_RADIUS
+  const nx = (s.pos.x - asteroid.pos.x) / reach
+  const ny = (s.pos.y - asteroid.pos.y) / reach
+  const tx = -ny
+  const ty = nx
+  const vn0 = preVel.x * nx + preVel.y * ny
+  const vt0 = preVel.x * tx + preVel.y * ty
+  const vn1 = s.vel.x * nx + s.vel.y * ny
+  const vt1 = s.vel.x * tx + s.vel.y * ty
+
+  assert.ok(Math.abs(vt1 - vt0) / Math.abs(vt0) < 0.02, `tangential speed changed: ${vt0} -> ${vt1}`)
+  const expectedVn1 = -vn0 * BODY_RESTITUTION
+  assert.ok(
+    Math.abs(vn1 - expectedVn1) / Math.abs(expectedVn1) < 0.05,
+    `normal speed was ${vn1}, expected ~${expectedVn1}`,
+  )
+})
+
+test('a moving moon passes its own velocity to the ball', () => {
+  const rail: Rail = { center: { x: 60, y: 20 }, radius: 10, period: 5, phase: 0 }
+  const moon = bodyFixture({ id: 'moon-1', kind: 'moon', mu: 0, radius: 2, pos: { x: 0, y: 0 }, rail })
+  const level = makeLevel({ bodies: [moon], target: { pos: { x: -1000, y: -1000 }, radius: 0.01 } })
+  // The moon starts at (70, 20) and orbits to (60, 30), where the ball waits at rest.
+  const s: BallState = {
+    pos: { x: 60, y: 30 },
     vel: { x: 0, y: 0 },
     t: 0,
     clock: 0,
@@ -462,19 +509,14 @@ test('a moon on a rail is only a hazard when it is actually there at that time',
     bounces: 0,
     lastBounceSpeed: 0,
   }
-  assert.equal(checkOutcome(level, sAt).outcome, 'hazard')
-  // At the same spatial point but a different course clock, the moon has moved away.
-  const sAway: BallState = {
-    pos: { x: 70, y: 20 },
-    vel: { x: 0, y: 0 },
-    t: 0,
-    clock: 5,
-    warps: 0,
-    inWormhole: false,
-    bounces: 0,
-    lastBounceSpeed: 0,
-  }
-  assert.notEqual(checkOutcome(level, sAway).outcome, 'hazard')
+  for (let i = 0; i < 5000 && s.bounces === 0; i++) step(level, s)
+  assert.ok(s.bounces >= 1, 'moon never reached the ball')
+  const speed = Math.hypot(s.vel.x, s.vel.y)
+  assert.ok(speed > 0, 'ball should have picked up speed from the moving moon')
+
+  const bp = bodyPosition(moon, s.clock)
+  const awayDot = (s.pos.x - bp.x) * s.vel.x + (s.pos.y - bp.y) * s.vel.y
+  assert.ok(awayDot > 0, 'ball should move away from the body after the bounce')
 })
 
 // ---------------------------------------------------------------------------
@@ -498,8 +540,8 @@ test('gravity from a nearby planet displaces the resting point toward it', () =>
   assert.ok(r2.end.y > r1.end.y, `expected displacement toward the planet: ${r2.end.y} vs ${r1.end.y}`)
 })
 
-test('a stationary ball near a heavy body (|accel| > ROLL_DECEL) is not at rest and ends hazard', () => {
-  const heavy = bodyFixture({ id: 'heavy', mu: 50, radius: 1, pos: { x: 10, y: 10 } })
+test('a stationary ball near a heavy black hole (|accel| > ROLL_DECEL) is not at rest and ends hazard', () => {
+  const heavy = bodyFixture({ id: 'heavy', kind: 'blackhole', mu: 50, radius: 1, pos: { x: 10, y: 10 } })
   const level = makeLevel({ bodies: [heavy], target: { pos: { x: -1000, y: -1000 }, radius: 0.01 } })
   const probe: Vec2 = { x: 0, y: 0 }
   acceleration(level, 11.5, 10, 0, probe)
@@ -526,6 +568,37 @@ test('a stationary ball near a heavy body (|accel| > ROLL_DECEL) is not at rest 
   }
   assert.equal(outcome.outcome, 'hazard')
   assert.equal(outcome.hazardId, 'heavy')
+})
+
+test('a stationary ball near a heavy planet (|accel| > ROLL_DECEL) is pulled in and settles at its surface', () => {
+  const heavy = bodyFixture({ id: 'heavy', kind: 'planet', mu: 50, radius: 1, pos: { x: 10, y: 10 } })
+  const level = makeLevel({ bodies: [heavy], target: { pos: { x: -1000, y: -1000 }, radius: 0.01 } })
+  const probe: Vec2 = { x: 0, y: 0 }
+  acceleration(level, 11.5, 10, 0, probe)
+  assert.ok(Math.hypot(probe.x, probe.y) > ROLL_DECEL, 'fixture check: acceleration should exceed ROLL_DECEL')
+
+  const s: BallState = {
+    pos: { x: 11.5, y: 10 },
+    vel: { x: 0, y: 0 },
+    t: 0,
+    clock: 0,
+    warps: 0,
+    inWormhole: false,
+    bounces: 0,
+    lastBounceSpeed: 0,
+  }
+  const immediate = checkOutcome(level, s)
+  assert.notEqual(immediate.outcome, 'rest')
+
+  // Roll it forward until it settles against the planet.
+  let outcome = immediate
+  for (let i = 0; i < 2000 && !outcome.outcome; i++) {
+    step(level, s)
+    outcome = checkOutcome(level, s)
+  }
+  assert.equal(outcome.outcome, 'rest')
+  const dist = Math.hypot(s.pos.x - heavy.pos.x, s.pos.y - heavy.pos.y)
+  assert.ok(Math.abs(dist - (heavy.radius + BALL_RADIUS)) < 0.05, `distance from centre was ${dist}`)
 })
 
 test('a stationary ball far from any body (|accel| <= ROLL_DECEL) reports rest immediately', () => {
@@ -597,13 +670,13 @@ test('predictPath includes a direction change after a bounce', () => {
 })
 
 test('predictPath stops early at a hazard', () => {
-  const planet = bodyFixture({ id: 'p1', pos: { x: 60, y: 20 }, mu: 5, radius: 2 })
-  const level = makeLevel({ bodies: [planet], target: { pos: { x: -1000, y: -1000 }, radius: 0.01 } })
+  const hole = bodyFixture({ id: 'p1', kind: 'blackhole', pos: { x: 60, y: 20 }, mu: 5, radius: 2 })
+  const level = makeLevel({ bodies: [hole], target: { pos: { x: -1000, y: -1000 }, radius: 0.01 } })
   const from = { x: 50, y: 20 }
   const path = predictPath(level, from, { angle: 0, power: 1 }, 5)
   const lastX = path[path.length - 2]
   const lastY = path[path.length - 1]
-  assert.ok(Math.hypot(lastX - planet.pos.x, lastY - planet.pos.y) <= planet.radius + BALL_RADIUS * 0.5 + 1e-6)
+  assert.ok(Math.hypot(lastX - hole.pos.x, lastY - hole.pos.y) <= hole.radius + BALL_RADIUS * 0.5 + 1e-6)
 })
 
 // ---------------------------------------------------------------------------
@@ -643,8 +716,8 @@ test('MAX_SHOT_TIME forces rest even while still moving', () => {
 // ---------------------------------------------------------------------------
 
 test('a body hazard reports hazardKind body', () => {
-  const planet = bodyFixture({ id: 'planet-x', pos: { x: 60, y: 20 }, mu: 5, radius: 2 })
-  const level = makeLevel({ bodies: [planet], target: { pos: { x: -1000, y: -1000 }, radius: 0.01 } })
+  const hole = bodyFixture({ id: 'planet-x', kind: 'blackhole', pos: { x: 60, y: 20 }, mu: 5, radius: 2 })
+  const level = makeLevel({ bodies: [hole], target: { pos: { x: -1000, y: -1000 }, radius: 0.01 } })
   const result = simulate(level, { x: 50, y: 20 }, { angle: 0, power: 1 })
   assert.equal(result.outcome, 'hazard')
   assert.equal(result.hazardKind, 'body')
@@ -666,9 +739,10 @@ test('simulate with a non-zero clock moves a railed body accordingly (shot outco
   const atZero = simulate(level, from, aim, 0)
   // A quarter period later the moon sits at (60, 30), well off the path.
   const atQuarter = simulate(level, from, aim, 250)
-  assert.equal(atZero.outcome, 'hazard')
-  assert.equal(atZero.hazardId, 'moon-1')
-  assert.notEqual(atQuarter.outcome, 'hazard')
+  assert.ok(
+    atZero.end.x !== atQuarter.end.x || atZero.bounces !== atQuarter.bounces,
+    'the two clocks should produce different shots',
+  )
 })
 
 // ---------------------------------------------------------------------------

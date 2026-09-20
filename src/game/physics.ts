@@ -27,6 +27,10 @@ export const LINEAR_DRAG = 0.22
 export const WALL_RESTITUTION = 0.78
 /** Fraction of the along-wall speed kept after a bounce. */
 export const WALL_GRIP = 0.97
+/** Fraction of the into-surface speed kept after bouncing off a planet, moon, or asteroid. */
+export const BODY_RESTITUTION = 0.7
+/** An impact slower than this does not bounce: the ball settles against the body instead. */
+export const BODY_SETTLE_SPEED = 0.6
 /** A ball crossing the cup faster than this skips over it, like a real lip-out. */
 export const CAPTURE_SPEED = 6.5
 /** Below this speed the ball counts as stopped, provided gravity cannot restart it. */
@@ -154,7 +158,8 @@ export function acceleration(level: Level, x: number, y: number, t: number, out:
     const p = bodyPosition(body, t)
     const dx = p.x - x
     const dy = p.y - y
-    // Inside a body the shot has already ended; the floor only guards the division.
+    // The ball never gets inside a solid body, and a black hole ends the shot; the floor only
+    // guards the division.
     const r2 = Math.max(dx * dx + dy * dy, 1e-6)
     const k = body.mu / (r2 * Math.sqrt(r2))
     ax += dx * k
@@ -241,6 +246,66 @@ function collideWalls(level: Level, s: BallState): void {
   }
 }
 
+/** Every body but a black hole is a solid ball the putt bounces off. A black hole swallows it. */
+export function isSolid(body: Body): boolean {
+  return body.kind !== 'blackhole'
+}
+
+/** True when the ball is resting against (or within a hair of) a solid body. */
+export function touchingBody(level: Level, p: Vec2, clock: number): boolean {
+  for (const body of level.bodies) {
+    if (!isSolid(body)) continue
+    const bp = bodyPosition(body, clock)
+    if (Math.hypot(bp.x - p.x, bp.y - p.y) <= body.radius + BALL_RADIUS + 0.02) return true
+  }
+  return false
+}
+
+/**
+ * Bounces the ball off solid bodies like a round bumper: the into-surface speed is reflected and
+ * damped, the along-surface speed is kept. A moving body's own velocity is accounted for, so a
+ * moon can knock the ball along.
+ */
+function collideBodies(level: Level, s: BallState, dt: number): void {
+  for (const body of level.bodies) {
+    if (!isSolid(body)) continue
+    const bp = bodyPosition(body, s.clock)
+    let nx = s.pos.x - bp.x
+    let ny = s.pos.y - bp.y
+    const dist = Math.hypot(nx, ny)
+    const reach = body.radius + BALL_RADIUS
+    if (dist >= reach) continue
+    if (dist > 1e-9) {
+      nx /= dist
+      ny /= dist
+    } else {
+      const speed = Math.hypot(s.vel.x, s.vel.y) || 1
+      nx = -s.vel.x / speed
+      ny = -s.vel.y / speed
+    }
+    s.pos.x = bp.x + nx * reach
+    s.pos.y = bp.y + ny * reach
+    let bvx = 0
+    let bvy = 0
+    if (body.rail) {
+      const prev = bodyPosition(body, s.clock - dt)
+      bvx = (bp.x - prev.x) / dt
+      bvy = (bp.y - prev.y) / dt
+    }
+    const vn = (s.vel.x - bvx) * nx + (s.vel.y - bvy) * ny
+    if (vn >= 0) continue
+    const impact = -vn
+    // A soft touch just stops the approach, so the ball can settle against the body.
+    const out = impact < BODY_SETTLE_SPEED ? 0 : impact * BODY_RESTITUTION
+    s.vel.x += nx * (impact + out)
+    s.vel.y += ny * (impact + out)
+    if (out > 0) {
+      s.bounces++
+      s.lastBounceSpeed = impact
+    }
+  }
+}
+
 /** Sends a ball that has just rolled into a wormhole mouth out of the other one, velocity kept. */
 function warp(level: Level, s: BallState): void {
   const holes = level.wormholes
@@ -263,8 +328,8 @@ function warp(level: Level, s: BallState): void {
 }
 
 /**
- * One fixed step, in place: velocity-Verlet for gravity, then rolling friction, then walls, then
- * wormholes.
+ * One fixed step, in place: velocity-Verlet for gravity, then rolling friction, then solid bodies,
+ * walls, and wormholes.
  * Friction makes the system dissipative on purpose: this is a putting green, not an orbit.
  */
 export function step(level: Level, s: BallState, dt: number = DT): void {
@@ -284,6 +349,7 @@ export function step(level: Level, s: BallState, dt: number = DT): void {
     s.vel.x *= k
     s.vel.y *= k
   }
+  collideBodies(level, s, dt)
   collideWalls(level, s)
   warp(level, s)
 }
@@ -305,6 +371,7 @@ export function checkOutcome(level: Level, s: BallState): OutcomeCheck {
     return { outcome: 'goal', hazardId: null, hazardKind: null, targetDistance }
   }
   for (const body of level.bodies) {
+    if (isSolid(body)) continue
     const p = bodyPosition(body, s.clock)
     if (Math.hypot(p.x - s.pos.x, p.y - s.pos.y) <= body.radius + BALL_RADIUS * 0.5) {
       return { outcome: 'hazard', hazardId: body.id, hazardKind: 'body', targetDistance }
@@ -324,8 +391,9 @@ export function checkOutcome(level: Level, s: BallState): OutcomeCheck {
   if (s.t >= MAX_SHOT_TIME) return { outcome: 'rest', hazardId: null, hazardKind: null, targetDistance }
   if (speed < REST_SPEED) {
     // At rest only if friction can hold the ball against the local pull. Otherwise it rolls on.
+    // A ball leaning on a planet is held there by the planet itself.
     acceleration(level, s.pos.x, s.pos.y, s.clock, probe)
-    if (Math.hypot(probe.x, probe.y) <= ROLL_DECEL) {
+    if (Math.hypot(probe.x, probe.y) <= ROLL_DECEL || touchingBody(level, s.pos, s.clock)) {
       return { outcome: 'rest', hazardId: null, hazardKind: null, targetDistance }
     }
   }

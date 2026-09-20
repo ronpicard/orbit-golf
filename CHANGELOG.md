@@ -2,6 +2,13 @@
 
 All notable changes to Orbit Golf are documented in this file, following the [Keep a Changelog](https://keepachangelog.com/) format.
 
+## [2.4.0] - 2026-09-20
+
+### Changed
+
+- Planets, moons, and asteroids no longer end the stroke. The ball bounces off them like a round bumper, still bent by their gravity, and a slow ball can come to rest leaning on one. A moving moon knocks the ball along. Black holes still swallow the ball and cost a replay.
+- The camera no longer lurches when the ball goes through a wormhole.
+
 ## [2.3.0] - 2026-09-20
 
 ### Changed

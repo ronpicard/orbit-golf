@@ -22,7 +22,10 @@ export interface Rail {
   phase: number
 }
 
-/** A gravitating hazard sitting on the course. Touching one ends the shot as a hazard. */
+/**
+ * A gravitating body sitting on the course. A black hole ends the shot as a hazard; every other
+ * kind is solid and the ball bounces off it.
+ */
 export interface Body {
   id: string
   kind: BodyKind
@@ -135,8 +138,8 @@ export interface BallState {
 
 /**
  * How a shot ends. 'goal': dropped in the cup. 'rest': rolled to a stop, the next shot is played
- * from there. 'hazard': touched a body or left the course, the next shot is replayed from where
- * this one started.
+ * from there. 'hazard': fell into a black hole, was caught by a saucer, or left the course; the
+ * next shot is replayed from where this one started.
  */
 export type Outcome = 'goal' | 'rest' | 'hazard'
 
