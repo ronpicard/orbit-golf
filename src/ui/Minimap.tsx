@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { bodyPosition, targetPosition } from '../game/physics.ts'
+import { bodyPosition, saucerPosition, targetPosition } from '../game/physics.ts'
 import type { Aim, Level, Vec2 } from '../game/types.ts'
 
 const MARGIN = 1
@@ -107,6 +107,68 @@ export default function Minimap({ level, lie, aim, levelNumber }: MinimapProps) 
                 style={isBlackHole ? undefined : { fill: b.palette[0] }}
                 vectorEffect="non-scaling-stroke"
               />
+            </g>
+          )
+        })}
+
+        {level.wormholes?.map((w) => (
+          <g key={w.id}>
+            <line
+              x1={w.a.x}
+              y1={w.a.y}
+              x2={w.b.x}
+              y2={w.b.y}
+              stroke="#a78bfa"
+              strokeOpacity={0.35}
+              strokeDasharray="0.3,0.3"
+              vectorEffect="non-scaling-stroke"
+            />
+            <circle
+              cx={w.a.x}
+              cy={w.a.y}
+              r={w.radius}
+              fill="none"
+              stroke="#a78bfa"
+              vectorEffect="non-scaling-stroke"
+            />
+            <circle
+              cx={w.b.x}
+              cy={w.b.y}
+              r={w.radius}
+              fill="none"
+              stroke="#a78bfa"
+              vectorEffect="non-scaling-stroke"
+            />
+          </g>
+        ))}
+
+        {level.saucers?.map((s) => {
+          const pos = saucerPosition(s, 0)
+          return (
+            <g key={s.id}>
+              {s.patrol && (
+                <line
+                  x1={s.patrol.a.x}
+                  y1={s.patrol.a.y}
+                  x2={s.patrol.b.x}
+                  y2={s.patrol.b.y}
+                  stroke="#4ade80"
+                  strokeOpacity={0.25}
+                  vectorEffect="non-scaling-stroke"
+                />
+              )}
+              {s.rail && (
+                <circle
+                  cx={s.rail.center.x}
+                  cy={s.rail.center.y}
+                  r={s.rail.radius}
+                  fill="none"
+                  stroke="#4ade80"
+                  strokeOpacity={0.25}
+                  vectorEffect="non-scaling-stroke"
+                />
+              )}
+              <circle cx={pos.x} cy={pos.y} r={s.radius} fill="#4ade80" fillOpacity={0.35} />
             </g>
           )
         })}

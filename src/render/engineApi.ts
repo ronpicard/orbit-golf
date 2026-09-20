@@ -8,6 +8,8 @@ export interface EngineEvents {
   onLaunch(aim: Aim): void
   /** The ball hit a wall. `speed` is the speed into the wall, for scaling sound. */
   onBounce(speed: number): void
+  /** The ball went through a wormhole. */
+  onWarp(): void
   /** The shot ended. Not fired when a shot is cancelled by abort() or loadLevel(). */
   onResult(result: ShotResult): void
   /**

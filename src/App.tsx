@@ -6,7 +6,7 @@ import { LEVELS, SANDBOX_LEVEL, makeSandboxBody } from './game/levels.ts'
 import type { SandboxSize } from './game/levels.ts'
 import { isUnlocked, loadProgress, recordResult, saveProgress, totalScore } from './game/progress.ts'
 import type { Progress } from './game/progress.ts'
-import type { Aim, Level, ShotResult, Vec2 } from './game/types.ts'
+import type { Aim, HazardKind, Level, ShotResult, Vec2 } from './game/types.ts'
 import type { EngineApi, EngineEvents } from './render/engineApi.ts'
 import GameCanvas from './ui/GameCanvas.tsx'
 import Hud from './ui/Hud.tsx'
@@ -60,7 +60,8 @@ function firstPlayableLevelIndex(progress: Progress): number {
 }
 
 /** Wording for a lost stroke, based on what the ball touched (or left the course entirely). */
-function hazardMessage(hazardId: string | null, level: Level): string {
+function hazardMessage(hazardId: string | null, level: Level, hazardKind: HazardKind | null): string {
+  if (hazardKind === 'saucer') return 'Abducted by a saucer - replay the stroke'
   if (hazardId === null) return 'Out of bounds - replay the stroke'
   const body = level.bodies.find((b) => b.id === hazardId)
   if (!body) return 'Out of bounds - replay the stroke'
@@ -292,9 +293,14 @@ export default function App() {
           engine?.loadLevel(sandboxLevel)
         }, SANDBOX_GOAL_RESET_MS)
       } else if (result.outcome === 'hazard') {
-        audio.crash()
-        audio.groan()
-        showToast(hazardMessage(result.hazardId, sandboxLevel))
+        if (result.hazardKind === 'saucer') {
+          audio.abduct()
+          audio.groan()
+        } else {
+          audio.crash()
+          audio.groan()
+        }
+        showToast(hazardMessage(result.hazardId, sandboxLevel, result.hazardKind))
       }
       return
     }
@@ -346,9 +352,14 @@ export default function App() {
     }
 
     if (result.outcome === 'hazard') {
-      audio.crash()
-      audio.groan()
-      showToast(hazardMessage(result.hazardId, level))
+      if (result.hazardKind === 'saucer') {
+        audio.abduct()
+        audio.groan()
+      } else {
+        audio.crash()
+        audio.groan()
+      }
+      showToast(hazardMessage(result.hazardId, level, result.hazardKind))
     } else {
       if (result.closest <= NEAR_MISS_DISTANCE) audio.groan()
       showToast(restMessage(result, level))
@@ -372,6 +383,7 @@ export default function App() {
       }
     },
     onBounce: (speed) => audio.bounce(speed),
+    onWarp: () => audio.warp(),
     onResult: handleResult,
     onLieChange: (nextLie) => {
       setIsFlying(false)

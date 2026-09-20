@@ -5,7 +5,7 @@ import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js'
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js'
 
-import type { Aim, BallState, Body, Level, Outcome, Rail, ShotResult, Vec2 } from '../game/types.ts'
+import type { Aim, BallState, Body, HazardKind, Level, Outcome, Rail, Saucer, ShotResult, Vec2 } from '../game/types.ts'
 import {
   BALL_RADIUS,
   DT,
@@ -47,8 +47,10 @@ import {
   createSunSprite,
   createWellMaterial,
 } from './shaders.ts'
-import { wellDepthAt } from './sheet.ts'
+import { bodyHeight, sheetMass, wellDepthAt } from './sheet.ts'
 import { ActiveTrail } from './trails.ts'
+import { buildSaucerVisual, buildWormholeVisual, wormholeColor } from './hazards.ts'
+import type { SaucerVisual, WormholeVisual } from './hazards.ts'
 import { ParticlePool } from './particles.ts'
 import { COLOR_AIM_HIGH, COLOR_AIM_LOW, COLOR_AIM_MID, COLOR_TEE } from './palette.ts'
 import { ALIEN_BACKPACK_OFFSET, createAlienGolfer } from './alien.ts'
@@ -74,6 +76,8 @@ const CHASE_FOLLOW_LOOKAT_FRAC = 0.55
 const IDLE_SWAY = THREE.MathUtils.degToRad(0.4)
 const CRASH_SHAKE_DURATION = 0.35
 const CRASH_SHAKE_MAX = 0.15
+/** How long the chase camera follows the ball hard after a wormhole warp, to catch up quickly. */
+const WARP_SNAP_DURATION = 0.4
 /** Critically-damped spring time constant for the camera yaw following the aim angle. */
 const CAMERA_YAW_TIME_CONSTANT = 0.12
 
@@ -104,6 +108,8 @@ const NEAR_MISS_DISTANCE = 1.2
 // --- Course wall constants -------------------------------------------------------------------------
 const WALL_THICK = 0.28
 const WALL_HEIGHT = 0.55
+/** Longest single piece of bumper wall, so walls can follow the curve of the sheet. */
+const WALL_PIECE_LENGTH = 1.2
 const ISLAND_HEIGHT = 0.55
 const SKIRT_DROP = 1.0
 
@@ -115,6 +121,32 @@ function hashStringToInt(s: string): number {
   let h = 0
   for (let i = 0; i < s.length; i++) h = (Math.imul(h, 31) + s.charCodeAt(i)) | 0
   return h
+}
+
+/** Diagonal hazard-chevron stripes, generated once and shared by every island's inset plate. */
+let chevronTexture: THREE.CanvasTexture | null = null
+function getChevronTexture(): THREE.CanvasTexture {
+  if (chevronTexture) return chevronTexture
+  const size = 128
+  const canvas = document.createElement('canvas')
+  canvas.width = size
+  canvas.height = size
+  const ctx = canvas.getContext('2d')
+  if (ctx) {
+    ctx.strokeStyle = 'rgba(103, 232, 249, 0.9)'
+    ctx.lineWidth = 10
+    ctx.lineCap = 'round'
+    for (let offset = -size; offset < size * 2; offset += 32) {
+      ctx.beginPath()
+      ctx.moveTo(offset, size + 10)
+      ctx.lineTo(offset + size + 10, -10)
+      ctx.stroke()
+    }
+  }
+  chevronTexture = new THREE.CanvasTexture(canvas)
+  chevronTexture.wrapS = THREE.RepeatWrapping
+  chevronTexture.wrapT = THREE.RepeatWrapping
+  return chevronTexture
 }
 
 /** Small deterministic PRNG so an asteroid's jitter is stable across rebuilds. */
@@ -201,6 +233,46 @@ function buildRailVisual(rail: Rail | undefined, color: number): RailVisual | nu
   }
 }
 
+/**
+ * A faint vertical line from a body's centre down to the sheet crest below it. Only drawn for
+ * bodies with `side: 'above'`, so the player reads that the mass is hanging overhead rather than
+ * sitting in a well.
+ */
+interface TetherVisual {
+  line: THREE.Line
+  /** `topLocalY`/`bottomLocalY` are in the parent group's local space (the body's own position is 0). */
+  update(topLocalY: number, bottomLocalY: number): void
+  dispose(): void
+}
+
+function buildTether(): TetherVisual {
+  const geometry = new THREE.BufferGeometry()
+  const positions = new Float32Array(6)
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
+  const material = new THREE.LineBasicMaterial({
+    color: 0xbfefff,
+    transparent: true,
+    opacity: 0.35,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+  })
+  const line = new THREE.Line(geometry, material)
+  const posAttr = geometry.attributes.position as THREE.BufferAttribute
+  return {
+    line,
+    update(topLocalY, bottomLocalY) {
+      const arr = posAttr.array as Float32Array
+      arr[1] = topLocalY
+      arr[4] = bottomLocalY
+      posAttr.needsUpdate = true
+    },
+    dispose() {
+      geometry.dispose()
+      material.dispose()
+    },
+  }
+}
+
 // --- Body visual builders (hazards: planets, moons, black holes, asteroids) -----------------------
 
 interface BodyVisual {
@@ -254,17 +326,22 @@ function buildPlanetVisual(body: Body, _ctx: VisualCtx): BodyVisual {
   const rail = buildRailVisual(body.rail, 0x8899aa)
   if (rail) group.add(rail.line)
 
-  const sheetOffset = body.radius * 0.6
+  const tether = body.side === 'above' ? buildTether() : null
+  if (tether) group.add(tether.line)
 
   return {
     group,
     update(lvl, t, dt, elapsed) {
       const p = bodyPosition(body, t)
-      const depth = wellDepthAt(lvl, p.x, p.y, t)
-      group.position.set(p.x, -depth + sheetOffset, p.y)
+      const y = bodyHeight(lvl, body, t)
+      group.position.set(p.x, y, p.y)
       mesh.rotation.y += dt * 0.06
       if (!isMoon) material.uniforms.uTime.value = elapsed
       rail?.update(lvl, t)
+      if (tether) {
+        const depth = wellDepthAt(lvl, p.x, p.y, t)
+        tether.update(0, -depth - y)
+      }
     },
     dispose() {
       geometry.dispose()
@@ -274,6 +351,7 @@ function buildPlanetVisual(body: Body, _ctx: VisualCtx): BodyVisual {
       ringGeometry?.dispose()
       ringMaterial?.dispose()
       rail?.dispose()
+      tether?.dispose()
     },
   }
 }
@@ -305,19 +383,26 @@ function buildBlackHoleVisual(body: Body, ctx: VisualCtx): BodyVisual {
   const rail = buildRailVisual(body.rail, 0x8899aa)
   if (rail) group.add(rail.line)
 
+  const tether = body.side === 'above' ? buildTether() : null
+  if (tether) group.add(tether.line)
+
   let spawnTimer = 0
 
   return {
     group,
     update(lvl, t, dt, elapsed) {
       const p = bodyPosition(body, t)
-      const depth = wellDepthAt(lvl, p.x, p.y, t)
-      group.position.set(p.x, -depth + body.radius, p.y)
+      const y = bodyHeight(lvl, body, t)
+      group.position.set(p.x, y, p.y)
       disc.rotation.z += dt * 0.15
       discMaterial.uniforms.uTime.value = elapsed
       photonMaterial.uniforms.uTime.value = elapsed
       haloMaterial.uniforms.uTime.value = elapsed
       rail?.update(lvl, t)
+      if (tether) {
+        const depth = wellDepthAt(lvl, p.x, p.y, t)
+        tether.update(0, -depth - y)
+      }
 
       // ~80 particles spiralling inward along the funnel at any time (life ~1s, respawned continuously).
       spawnTimer -= dt
@@ -343,6 +428,7 @@ function buildBlackHoleVisual(body: Body, ctx: VisualCtx): BodyVisual {
       haloGeometry.dispose()
       haloMaterial.dispose()
       rail?.dispose()
+      tether?.dispose()
     },
   }
 }
@@ -365,19 +451,27 @@ function buildAsteroidVisual(body: Body): BodyVisual {
   const rail = buildRailVisual(body.rail, 0x8899aa)
   if (rail) group.add(rail.line)
 
+  const tether = body.side === 'above' ? buildTether() : null
+  if (tether) group.add(tether.line)
+
   return {
     group,
     update(lvl, t, dt) {
       const p = bodyPosition(body, t)
-      const depth = wellDepthAt(lvl, p.x, p.y, t)
-      group.position.set(p.x, -depth + body.radius * 0.5, p.y)
+      const y = bodyHeight(lvl, body, t)
+      group.position.set(p.x, y, p.y)
       mesh.rotateOnAxis(spinAxis, dt * 0.15)
       rail?.update(lvl, t)
+      if (tether) {
+        const depth = wellDepthAt(lvl, p.x, p.y, t)
+        tether.update(0, -depth - y)
+      }
     },
     dispose() {
       geometry.dispose()
       material.dispose()
       rail?.dispose()
+      tether?.dispose()
     },
   }
 }
@@ -617,17 +711,31 @@ function buildCourseStructure(level: Level): CourseStructure {
     for (let i = 0; i < n; i++) {
       const a = loop[i]
       const b = loop[(i + 1) % n]
-      const mx = (a.x + b.x) / 2
-      const my = (a.y + b.y) / 2
       const len = Math.hypot(b.x - a.x, b.y - a.y)
       if (len < 1e-6) continue
-      const depth = wellDepthAt(level, mx, my, 0)
-      const mesh = new THREE.Mesh(segmentGeometry, wallMaterial)
-      mesh.scale.set(len, 1, 1)
-      mesh.position.set(mx, -depth + WALL_HEIGHT / 2, my)
-      // rotation.y = angle maps local +X to world (cos, 0, -sin); align it to the edge tangent.
-      mesh.rotation.y = Math.atan2(-(b.y - a.y), b.x - a.x)
-      group.add(mesh)
+      // Short pieces, each tilted to its own two ends, so a wall follows the sheet over a hill or
+      // down into a well instead of floating above it or sinking under it.
+      const pieces = Math.max(1, Math.ceil(len / WALL_PIECE_LENGTH))
+      const yaw = Math.atan2(-(b.y - a.y), b.x - a.x)
+      for (let k = 0; k < pieces; k++) {
+        const u0 = k / pieces
+        const u1 = (k + 1) / pieces
+        const x0 = a.x + (b.x - a.x) * u0
+        const z0 = a.y + (b.y - a.y) * u0
+        const x1 = a.x + (b.x - a.x) * u1
+        const z1 = a.y + (b.y - a.y) * u1
+        const y0 = -wellDepthAt(level, x0, z0, 0)
+        const y1 = -wellDepthAt(level, x1, z1, 0)
+        const run = len / pieces
+        const mesh = new THREE.Mesh(segmentGeometry, wallMaterial)
+        // A hair of overlap hides the seams between tilted pieces.
+        mesh.scale.set(Math.hypot(run, y1 - y0) + 0.02, 1, 1)
+        mesh.position.set((x0 + x1) / 2, (y0 + y1) / 2 + WALL_HEIGHT / 2, (z0 + z1) / 2)
+        // rotation.y = angle maps local +X to world (cos, 0, -sin); align it to the edge tangent.
+        // rotation.z is applied first, in the wall's own frame, and pitches it along the slope.
+        mesh.rotation.set(0, yaw, Math.atan2(y1 - y0, run))
+        group.add(mesh)
+      }
     }
     for (const v of loop) {
       const depth = wellDepthAt(level, v.x, v.y, 0)
@@ -640,12 +748,29 @@ function buildCourseStructure(level: Level): CourseStructure {
   addLoopWalls(level.course)
   for (const island of level.islands) addLoopWalls(island)
 
-  // Islands: filled raised blocks, dark indigo top with a neon edge.
-  const islandTopMaterial = new THREE.MeshStandardMaterial({ color: 0x1e1b4b, roughness: 0.75, metalness: 0.1 })
+  // Islands: filled raised blocks that read as solid bumpers - lighter indigo body, neon edge, and
+  // an inset plate with a hazard-chevron pattern so they don't read as blank dead squares.
+  const islandTopMaterial = new THREE.MeshStandardMaterial({
+    color: 0x3730a3,
+    roughness: 0.75,
+    metalness: 0.1,
+    emissive: 0x312e81,
+    emissiveIntensity: 0.7,
+  })
   const islandEdgeMaterial = new THREE.LineBasicMaterial({ color: 0x67e8f9, transparent: true, opacity: 0.8 })
+  const islandPlateMaterial = new THREE.MeshBasicMaterial({
+    map: getChevronTexture(),
+    color: 0x67e8f9,
+    transparent: true,
+    opacity: 0.85,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+  })
   disposables.push(() => {
     islandTopMaterial.dispose()
     islandEdgeMaterial.dispose()
+    islandPlateMaterial.dispose()
   })
   for (const island of level.islands) {
     if (island.length < 3) continue
@@ -669,9 +794,21 @@ function buildCourseStructure(level: Level): CourseStructure {
     edges.rotation.x = -Math.PI / 2
     edges.position.y = -depth
     group.add(edges)
+
+    // Inset plate: an 80%-scale copy of the block's own footprint, chevron-striped, sitting just
+    // above the top face - reads as a bumper's warning marking rather than a blank cap.
+    const insetPoints = island.map((p) => new THREE.Vector2(cx + (p.x - cx) * 0.8, cy + (p.y - cy) * 0.8))
+    const insetShape = new THREE.Shape(insetPoints)
+    const insetGeometry = new THREE.ShapeGeometry(insetShape)
+    const insetMesh = new THREE.Mesh(insetGeometry, islandPlateMaterial)
+    insetMesh.rotation.x = -Math.PI / 2
+    insetMesh.position.y = -depth + ISLAND_HEIGHT + 0.02
+    group.add(insetMesh)
+
     disposables.push(() => {
       geometry.dispose()
       edgesGeometry.dispose()
+      insetGeometry.dispose()
     })
   }
 
@@ -892,6 +1029,8 @@ export function createEngine(canvas: HTMLCanvasElement, events: EngineEvents): E
 
   // --- Gravity well + hazards + tee + cup + course structure (rebuilt per level) -------------------
   let bodyVisuals: BodyVisual[] = []
+  let wormholeVisuals: WormholeVisual[] = []
+  let saucerVisuals: { saucer: Saucer; visual: SaucerVisual }[] = []
   let teeVisual: TeeVisual | null = null
   let cupVisual: CupVisual | null = null
   let well: WellVisual | null = null
@@ -908,12 +1047,18 @@ export function createEngine(canvas: HTMLCanvasElement, events: EngineEvents): E
   let ballState: BallState | null = null
   let flightStepCounter = 0
   let closestApproach = Infinity
-  let postFlightT = 0
-  let postFlightTimer = 0
   let gateFlash = 0
   let elapsed = 0
   let lastWidth = 0
   let lastHeight = 0
+  /**
+   * Course time, in seconds. Drives every rail, patrol, wormhole and saucer. Unlike a shot's own
+   * elapsed time (BallState.t), this never resets mid-hole: it keeps advancing while aiming, during
+   * the swing delay, and through every post-shot phase, so movers never appear to freeze.
+   */
+  let courseClock = 0
+  /** Forces a prediction refresh every 2nd frame while aiming on a level with moving hazards. */
+  let aimRefreshFrame = 0
 
   // Swing delay: onLaunch()/isFlying() fire/flip immediately, but the physical ball only exists
   // from contact onward.
@@ -929,6 +1074,16 @@ export function createEngine(canvas: HTMLCanvasElement, events: EngineEvents): E
   let hopTo: Vec2 | null = null
   let hopDuration = REST_HOP_DURATION
   const sinkStartPos = new THREE.Vector3()
+
+  // Saucer abduction: while postPhase is 'hazardBeam' and the hazard was a saucer, the ball is
+  // animated up the beam instead of just vanishing, and that saucer is held still for the duration.
+  let activeHazardKind: HazardKind | null = null
+  let hazardSaucerId: string | null = null
+  let hazardFreezeClock = 0
+  const hazardSuckFrom = new THREE.Vector3()
+
+  /** Camera catch-up after a warp: for a short window the chase camera follows the ball hard. */
+  let warpSnapTimer = 0
 
   // --- Chase camera state --------------------------------------------------------------------------
   const camPos = new THREE.Vector3()
@@ -1011,6 +1166,39 @@ export function createEngine(canvas: HTMLCanvasElement, events: EngineEvents): E
 
   function spawnLaunchShockwave(pos: Vec2, y: number): void {
     spawnRingEffect(pos, y, 0xf0fbff, 5, 0.4)
+  }
+
+  /** A small burst at both mouths of whichever wormhole the ball just passed through. */
+  function spawnWarpEffects(level: Level, ballPos: Vec2, clock: number): void {
+    const holes = level.wormholes ?? []
+    for (let i = 0; i < holes.length; i++) {
+      const w = holes[i]
+      const nearA = Math.hypot(w.a.x - ballPos.x, w.a.y - ballPos.y) < 0.1
+      const nearB = !nearA && Math.hypot(w.b.x - ballPos.x, w.b.y - ballPos.y) < 0.1
+      if (!nearA && !nearB) continue
+      const color = wormholeColor(i)
+      for (const mouth of [w.a, w.b]) {
+        const y = -wellDepthAt(level, mouth.x, mouth.y, clock) + 0.1
+        spawnRingEffect(mouth, y, color, 3, 0.4)
+        for (let p = 0; p < 16; p++) {
+          const a = Math.random() * Math.PI * 2
+          const speed = 0.6 + Math.random() * 1.2
+          particlePool.spawn(
+            mouth.x,
+            y,
+            mouth.y,
+            Math.cos(a) * speed,
+            0.4 + Math.random() * 0.8,
+            Math.sin(a) * speed,
+            new THREE.Color(color),
+            0.06,
+            0.5,
+            { drag: 1 },
+          )
+        }
+      }
+      return
+    }
   }
 
   /** Burn-up / swirl / debris / fall-away flash depending on what ended the shot. */
@@ -1121,6 +1309,8 @@ export function createEngine(canvas: HTMLCanvasElement, events: EngineEvents): E
 
   // --- Level / body rebuild ---------------------------------------------------------------------------
   function rebuildLevelVisuals(level: Level): void {
+    const lowPerf = computeLowPerf()
+
     for (const v of bodyVisuals) {
       scene.remove(v.group)
       v.dispose()
@@ -1129,6 +1319,26 @@ export function createEngine(canvas: HTMLCanvasElement, events: EngineEvents): E
       const v = buildBodyVisual(body, visualCtx)
       scene.add(v.group)
       return v
+    })
+
+    for (const wv of wormholeVisuals) {
+      scene.remove(wv.group)
+      wv.dispose()
+    }
+    wormholeVisuals = (level.wormholes ?? []).map((w, i) => {
+      const v = buildWormholeVisual(w, i, lowPerf)
+      scene.add(v.group)
+      return v
+    })
+
+    for (const sv of saucerVisuals) {
+      scene.remove(sv.visual.group)
+      sv.visual.dispose()
+    }
+    saucerVisuals = (level.saucers ?? []).map((s) => {
+      const v = buildSaucerVisual(s, lowPerf)
+      scene.add(v.group)
+      return { saucer: s, visual: v }
     })
 
     if (teeVisual) {
@@ -1162,22 +1372,21 @@ export function createEngine(canvas: HTMLCanvasElement, events: EngineEvents): E
     courseWallMaterial = courseStructure.wallMaterial
     scene.add(courseStructure.group)
 
-    const lowPerf = computeLowPerf()
     backdrop.build(level, { lowPerf })
     crowd.build(level, { lowPerf })
   }
 
   function updateWellUniforms(tSim: number): void {
     if (!well || !currentLevel) return
-    const massive = currentLevel.bodies.filter((b) => b.mu > 0).slice(0, MAX_WELL_BODIES)
+    const massive = currentLevel.bodies.filter((b) => sheetMass(b) !== 0).slice(0, MAX_WELL_BODIES)
     const bodiesUniform = well.material.uniforms.uBodies.value as THREE.Vector3[]
     const softUniform = well.material.uniforms.uSoft.value as Float32Array
     const { x: cx, y: cy } = well.center
     massive.forEach((body, i) => {
       const p = bodyPosition(body, tSim)
       // See buildWellMesh's doc comment for this local-space transform.
-      // Shader layout: xz = position in the sheet's local space, y = mu.
-      bodiesUniform[i].set(p.x - cx, body.mu, cy - p.y)
+      // Shader layout: xz = position in the sheet's local space, y = signed sheet mass.
+      bodiesUniform[i].set(p.x - cx, sheetMass(body), cy - p.y)
       softUniform[i] = body.radius
     })
     well.material.uniforms.uCount.value = massive.length
@@ -1204,7 +1413,7 @@ export function createEngine(canvas: HTMLCanvasElement, events: EngineEvents): E
     const back = portrait ? CHASE_BACK_PORTRAIT : CHASE_BACK_LANDSCAPE
     const fov = portrait ? CHASE_FOV_PORTRAIT : CHASE_FOV_LANDSCAPE
     const yMin = portrait ? -0.52 : -0.62
-    const lieY = -wellDepthAt(level, lieP.x, lieP.y, 0)
+    const lieY = -wellDepthAt(level, lieP.x, lieP.y, courseClock)
 
     camera.fov = fov
     camera.aspect = lastWidth / Math.max(1, lastHeight)
@@ -1215,7 +1424,7 @@ export function createEngine(canvas: HTMLCanvasElement, events: EngineEvents): E
     const points = [
       new THREE.Vector3(lieP.x - dir.x * 0.4, lieY + 1.5, lieP.y - dir.y * 0.4),
       new THREE.Vector3(lieP.x, lieY + BALL_RADIUS, lieP.y),
-      new THREE.Vector3(aheadX, -wellDepthAt(level, aheadX, aheadY, 0), aheadY),
+      new THREE.Vector3(aheadX, -wellDepthAt(level, aheadX, aheadY, courseClock), aheadY),
     ]
 
     const lookAt = new THREE.Vector3(lieP.x + dir.x * CHASE_LOOKAHEAD, lieY + 0.4, lieP.y + dir.y * CHASE_LOOKAHEAD)
@@ -1290,11 +1499,17 @@ export function createEngine(canvas: HTMLCanvasElement, events: EngineEvents): E
       currentFov = framing.fov
     }
 
+    if (warpSnapTimer > 0) warpSnapTimer = Math.max(0, warpSnapTimer - dt)
+
     let finalPos = camPos
     let finalLookAt = camLookAt
     if (flying && ballState && !reducedMotion) {
-      finalLookAt = camLookAt.clone().lerp(ballMesh.position, CHASE_FOLLOW_LOOKAT_FRAC)
-      finalPos = camPos.clone().lerp(ballMesh.position, 0.05)
+      // After a wormhole warp the ball jumps instantly; follow it hard for a short window instead
+      // of the usual slow chase-camera lag, so the view catches up within about WARP_SNAP_DURATION.
+      const followK = warpSnapTimer > 0 ? 0.85 : 0.05
+      const lookAtK = warpSnapTimer > 0 ? 0.95 : CHASE_FOLLOW_LOOKAT_FRAC
+      finalLookAt = camLookAt.clone().lerp(ballMesh.position, lookAtK)
+      finalPos = camPos.clone().lerp(ballMesh.position, followK)
     }
 
     camera.fov = currentFov
@@ -1334,7 +1549,7 @@ export function createEngine(canvas: HTMLCanvasElement, events: EngineEvents): E
       const d = startR + length * frac
       const x = lie.x + dirX * d
       const z = lie.y + dirY * d
-      const y = -wellDepthAt(level, x, z, 0) + 0.05
+      const y = -wellDepthAt(level, x, z, courseClock) + 0.05
       const lx = x - perpX * RIBBON_HALF_WIDTH
       const lz = z - perpZ * RIBBON_HALF_WIDTH
       const rx = x + perpX * RIBBON_HALF_WIDTH
@@ -1350,14 +1565,14 @@ export function createEngine(canvas: HTMLCanvasElement, events: EngineEvents): E
     ;(ribbonGeometry.attributes.position as THREE.BufferAttribute).needsUpdate = true
     ribbonMaterial.uniforms.uPower.value = aim.power
 
-    const path = predictPath(level, lie, aim, PREDICT_SECONDS, PREDICT_STRIDE)
+    const path = predictPath(level, lie, aim, PREDICT_SECONDS, PREDICT_STRIDE, courseClock)
     const count = path.length / 2
     const positions = new Float32Array(count * 3)
     const sizes = new Float32Array(count)
     for (let i = 0; i < count; i++) {
       const px = path[i * 2]
       const pz = path[i * 2 + 1]
-      const t = i * PREDICT_STRIDE * DT
+      const t = courseClock + i * PREDICT_STRIDE * DT
       const py = -wellDepthAt(level, px, pz, t) + 0.06
       positions[i * 3] = px
       positions[i * 3 + 1] = py
@@ -1435,12 +1650,11 @@ export function createEngine(canvas: HTMLCanvasElement, events: EngineEvents): E
   function performContact(a: Aim): void {
     if (!currentLevel) return
     pendingLaunchAim = null
-    ballState = launchState(currentLevel, lie, a)
+    ballState = launchState(currentLevel, lie, a, courseClock)
     flightStepCounter = 0
     closestApproach = Infinity
-    postFlightTimer = 0
     activeTrail.reset()
-    const depth0 = wellDepthAt(currentLevel, ballState.pos.x, ballState.pos.y, 0)
+    const depth0 = wellDepthAt(currentLevel, ballState.pos.x, ballState.pos.y, ballState.clock)
     const y0 = -depth0 + 0.14
     activeTrail.addPoint(ballState.pos.x, y0, ballState.pos.y, ballState.t)
     ballMesh.visible = true
@@ -1469,34 +1683,34 @@ export function createEngine(canvas: HTMLCanvasElement, events: EngineEvents): E
     }
   }
 
-  function endShot(outcome: Outcome, hazardId: string | null): void {
+  function endShot(outcome: Outcome, hazardId: string | null, hazardKind: HazardKind | null): void {
     if (!ballState || !currentLevel) return
     const level = currentLevel
     const result: ShotResult = {
       outcome,
       hazardId,
+      hazardKind,
       time: ballState.t,
       closest: closestApproach,
       end: { x: ballState.pos.x, y: ballState.pos.y },
       bounces: ballState.bounces,
+      warps: ballState.warps,
     }
     // Nothing survives a finished stroke: the comet tail fades out and clears itself, never
     // leaving a mark on the course.
     activeTrail.fadeOut()
-    const depthEnd = wellDepthAt(level, ballState.pos.x, ballState.pos.y, ballState.t)
+    const depthEnd = wellDepthAt(level, ballState.pos.x, ballState.pos.y, ballState.clock)
     const endY = -depthEnd + 0.14
 
     if (outcome === 'goal') {
       alien.setWatchTarget(null)
       alien.react('cheer')
       crowd.react('cheer')
-      spawnGoalBurst(targetPosition(level.target, ballState.t), -depthEnd)
+      spawnGoalBurst(targetPosition(level.target, ballState.clock), -depthEnd)
       sinkStartPos.set(ballState.pos.x, endY, ballState.pos.y)
       pendingResult = result
       postPhase = 'goalSink'
       postPhaseT = 0
-      postFlightT = ballState.t
-      postFlightTimer = GOAL_SINK_DURATION
       return
     }
 
@@ -1511,23 +1725,28 @@ export function createEngine(canvas: HTMLCanvasElement, events: EngineEvents): E
       glideCameraToLie(hopTo)
       postPhase = 'restWait'
       postPhaseT = 0
-      postFlightT = ballState.t
-      postFlightTimer = REST_WAIT_DURATION + REST_HOP_DURATION
       return
     }
 
     // hazard
     alien.setWatchTarget(null)
-    spawnHazardEffect(level, hazardId, ballState.pos, -depthEnd)
+    activeHazardKind = hazardKind
+    hazardSaucerId = hazardKind === 'saucer' ? hazardId : null
+    if (hazardKind === 'saucer') {
+      // The abduction animation (ball lerps up the beam) is driven per-frame from updatePostPhase;
+      // freeze the clock so the abducting saucer holds its position for the animation.
+      hazardFreezeClock = ballState.clock
+      hazardSuckFrom.set(ballState.pos.x, endY, ballState.pos.y)
+    } else {
+      spawnHazardEffect(level, hazardId, ballState.pos, -depthEnd)
+      ballMesh.visible = false
+      ballGlow.visible = false
+    }
     alien.react('slump')
     crowd.react('groan')
     events.onResult(result)
-    ballMesh.visible = false
-    ballGlow.visible = false
     postPhase = 'hazardBeam'
     postPhaseT = 0
-    postFlightT = ballState.t
-    postFlightTimer = HAZARD_FX_DURATION + HAZARD_BEAM_DURATION
   }
 
   function hopWorldPos(k: number): THREE.Vector3 {
@@ -1535,7 +1754,7 @@ export function createEngine(canvas: HTMLCanvasElement, events: EngineEvents): E
     if (!level || !hopFrom || !hopTo) return new THREE.Vector3()
     const x = THREE.MathUtils.lerp(hopFrom.x, hopTo.x, k)
     const y = THREE.MathUtils.lerp(hopFrom.y, hopTo.y, k)
-    const baseDepth = wellDepthAt(level, x, y, 0)
+    const baseDepth = wellDepthAt(level, x, y, courseClock)
     const arc = Math.sin(clamp(k, 0, 1) * Math.PI) * 1.1
     return new THREE.Vector3(x, -baseDepth + arc, y)
   }
@@ -1606,7 +1825,7 @@ export function createEngine(canvas: HTMLCanvasElement, events: EngineEvents): E
         ballMesh.visible = false
         ballGlow.visible = false
         events.onLieChange({ x: lie.x, y: lie.y })
-        applyAim(defaultAim(level, lie), false)
+        applyAim(defaultAim(level, lie, courseClock), false)
         hopFrom = null
         hopTo = null
       }
@@ -1614,12 +1833,51 @@ export function createEngine(canvas: HTMLCanvasElement, events: EngineEvents): E
     }
 
     if (postPhase === 'hazardBeam') {
+      if (activeHazardKind === 'saucer' && hazardSaucerId) {
+        const match = saucerVisuals.find((sv) => sv.saucer.id === hazardSaucerId)
+        if (match) {
+          const k = Math.min(1, postPhaseT / HAZARD_FX_DURATION)
+          const eased = k * k
+          const target = match.visual.worldPos(level, hazardFreezeClock)
+          if (k < 1) {
+            ballMesh.visible = true
+            ballGlow.visible = true
+            ballMesh.position.lerpVectors(hazardSuckFrom, target, eased)
+            const scale = THREE.MathUtils.lerp(1, 0.3, eased)
+            ballMesh.scale.setScalar(scale)
+            ballGlow.position.copy(ballMesh.position)
+            ballGlow.scale.setScalar(scale)
+            if (Math.random() < 0.5 && !reducedMotion) {
+              particlePool.spawn(
+                ballMesh.position.x,
+                ballMesh.position.y,
+                ballMesh.position.z,
+                (Math.random() - 0.5) * 0.4,
+                0.6 + Math.random() * 0.6,
+                (Math.random() - 0.5) * 0.4,
+                new THREE.Color(0x4ade80),
+                0.05,
+                0.35,
+                { drag: 1 },
+              )
+            }
+          } else {
+            ballMesh.visible = false
+            ballGlow.visible = false
+            ballMesh.scale.setScalar(1)
+            ballGlow.scale.setScalar(1)
+          }
+          match.visual.setBeamBright(eased)
+        }
+      }
       if (postPhaseT >= HAZARD_FX_DURATION + HAZARD_BEAM_DURATION) {
         postPhase = null
         flying = false
         showRestingBall = true
         events.onLieChange({ x: lie.x, y: lie.y })
-        applyAim(defaultAim(level, lie), false)
+        applyAim(defaultAim(level, lie, courseClock), false)
+        activeHazardKind = null
+        hazardSaucerId = null
       }
     }
   }
@@ -1638,21 +1896,28 @@ export function createEngine(canvas: HTMLCanvasElement, events: EngineEvents): E
     accumulator += dt
     while (accumulator >= DT && flying && ballState && !postPhase) {
       const prevBounces = ballState.bounces
+      const prevWarps = ballState.warps
       step(currentLevel, ballState)
       accumulator -= DT
       flightStepCounter++
       if (ballState.bounces > prevBounces) {
-        const depth = wellDepthAt(currentLevel, ballState.pos.x, ballState.pos.y, ballState.t)
+        const depth = wellDepthAt(currentLevel, ballState.pos.x, ballState.pos.y, ballState.clock)
         onBallBounce(ballState.pos, -depth + 0.14, ballState.lastBounceSpeed)
+      }
+      if (ballState.warps > prevWarps) {
+        events.onWarp()
+        activeTrail.reset()
+        spawnWarpEffects(currentLevel, ballState.pos, ballState.clock)
+        warpSnapTimer = WARP_SNAP_DURATION
       }
       const check = checkOutcome(currentLevel, ballState)
       if (check.targetDistance < closestApproach) closestApproach = check.targetDistance
       if (flightStepCounter % 2 === 0) {
-        const depth = wellDepthAt(currentLevel, ballState.pos.x, ballState.pos.y, ballState.t)
+        const depth = wellDepthAt(currentLevel, ballState.pos.x, ballState.pos.y, ballState.clock)
         activeTrail.addPoint(ballState.pos.x, -depth + 0.14, ballState.pos.y, ballState.t)
       }
       if (check.outcome) {
-        endShot(check.outcome, check.hazardId)
+        endShot(check.outcome, check.hazardId, check.hazardKind)
         break
       }
     }
@@ -1660,28 +1925,31 @@ export function createEngine(canvas: HTMLCanvasElement, events: EngineEvents): E
   let accumulator = 0
 
   // --- Per-frame visuals ----------------------------------------------------------------------------
-  function currentTSim(dt: number): number {
-    if (flying && ballState) return ballState.t
-    if (postFlightTimer > 0) {
-      postFlightTimer -= dt
-      if (postFlightTimer <= 0) {
-        postFlightTimer = 0
-        return 0
-      }
-      return postFlightT
-    }
-    return 0
+  /** True while a level has any moving hazard, so the aim preview needs periodic refreshing. */
+  function levelHasMovers(level: Level): boolean {
+    if (level.target.rail) return true
+    if (level.bodies.some((b) => b.rail)) return true
+    if ((level.saucers ?? []).some((s) => s.rail || s.patrol)) return true
+    return false
   }
 
   function currentProximity(level: Level): number {
     if (!flying || !ballState) return 0
-    const tp = targetPosition(level.target, ballState.t)
+    const tp = targetPosition(level.target, ballState.clock)
     const dist = Math.hypot(tp.x - ballState.pos.x, tp.y - ballState.pos.y)
     return clamp(1 - dist / (level.target.radius * 6), 0, 1)
   }
 
   function updateVisuals(dt: number): void {
     elapsed += dt
+    // The course clock drives every rail, patrol, wormhole and saucer. It tracks the ball's own
+    // clock while a shot is actually in flight, and otherwise just keeps ticking with real time, so
+    // movers never freeze while aiming, mid-swing, or during a post-shot phase.
+    if (ballState && !postPhase) {
+      courseClock = ballState.clock
+    } else {
+      courseClock += dt
+    }
     activeTrail.update(dt)
     ;(nebula.material as THREE.ShaderMaterial).uniforms.uTime.value = elapsed
     ;(stars.material as THREE.ShaderMaterial).uniforms.uTime.value = elapsed
@@ -1691,17 +1959,23 @@ export function createEngine(canvas: HTMLCanvasElement, events: EngineEvents): E
     }
 
     const level = currentLevel
-    const tSim = currentTSim(dt)
+    const tSim = courseClock
     if (level) {
       for (const v of bodyVisuals) v.update(level, tSim, dt, elapsed)
       teeVisual?.update(level, tSim, elapsed)
       gateFlash = Math.max(0, gateFlash - dt * 2.5)
       cupVisual?.update(level, tSim, dt, elapsed, gateFlash, currentProximity(level))
       updateWellUniforms(tSim)
+      for (const wv of wormholeVisuals) wv.update(level, tSim, elapsed)
+      for (const sv of saucerVisuals) {
+        // The saucer performing an abduction holds still (frozen clock) for the whole animation.
+        const t = postPhase === 'hazardBeam' && sv.saucer.id === hazardSaucerId ? hazardFreezeClock : tSim
+        sv.visual.update(level, t, dt, elapsed)
+      }
     }
 
     if (flying && ballState && level) {
-      const depth = wellDepthAt(level, ballState.pos.x, ballState.pos.y, ballState.t)
+      const depth = wellDepthAt(level, ballState.pos.x, ballState.pos.y, ballState.clock)
       ballMesh.position.set(ballState.pos.x, -depth + 0.14, ballState.pos.y)
       ballGlow.position.copy(ballMesh.position)
       // ~2 comet sparks per frame while flying.
@@ -1727,7 +2001,15 @@ export function createEngine(canvas: HTMLCanvasElement, events: EngineEvents): E
     if (postPhase) updatePostPhase(dt)
 
     aimGroup.visible = !flying
-    if (!flying) updateAimIndicator()
+    if (!flying) {
+      // Levels with moving hazards need the prediction to track them while the player aims; static
+      // levels keep the previous behaviour of only recomputing when the aim itself changes.
+      if (level && levelHasMovers(level)) {
+        aimRefreshFrame++
+        if (aimRefreshFrame % 2 === 0) aimDirty = true
+      }
+      updateAimIndicator()
+    }
 
     if (level) {
       if (alienHopK !== null) {
@@ -1913,12 +2195,15 @@ export function createEngine(canvas: HTMLCanvasElement, events: EngineEvents): E
         postPhase = null
         pendingResult = null
         alienHopK = null
+        activeHazardKind = null
+        hazardSaucerId = null
         ballMesh.visible = false
         ballGlow.visible = false
         activeTrail.reset()
       }
       currentLevel = level
       rebuildLevelVisuals(level)
+      if (!options?.keepTrails) courseClock = 0
 
       const prevLie = lie
       const keep =
@@ -1932,9 +2217,8 @@ export function createEngine(canvas: HTMLCanvasElement, events: EngineEvents): E
 
       showRestingBall = true
       alien.setWatchTarget(null)
-      postFlightTimer = 0
       events.onLieChange({ x: lie.x, y: lie.y })
-      const initialAim = defaultAim(level, lie)
+      const initialAim = defaultAim(level, lie, courseClock)
       // Snap the yaw straight to the fresh aim - a level load is a hard reset, not something to spring into.
       cameraYaw = initialAim.angle
       cameraYawVelocity.v = 0
@@ -1968,6 +2252,8 @@ export function createEngine(canvas: HTMLCanvasElement, events: EngineEvents): E
       postPhase = null
       pendingResult = null
       alienHopK = null
+      activeHazardKind = null
+      hazardSaucerId = null
       ballMesh.visible = false
       ballGlow.visible = false
       showRestingBall = true
@@ -2005,6 +2291,18 @@ export function createEngine(canvas: HTMLCanvasElement, events: EngineEvents): E
       for (const v of bodyVisuals) {
         scene.remove(v.group)
         v.dispose()
+      }
+      for (const wv of wormholeVisuals) {
+        scene.remove(wv.group)
+        wv.dispose()
+      }
+      for (const sv of saucerVisuals) {
+        scene.remove(sv.visual.group)
+        sv.visual.dispose()
+      }
+      if (chevronTexture) {
+        chevronTexture.dispose()
+        chevronTexture = null
       }
       if (teeVisual) {
         scene.remove(teeVisual.group)

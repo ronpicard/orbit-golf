@@ -141,6 +141,7 @@ export default function Menu({ levels, progress, onPlay, onSelectLevel, onSandbo
           <p>Drag left or right to turn, drag up for power, then release to putt.</p>
           <p>The ball bounces off walls and rolls to a stop. Play your next stroke from where it lies.</p>
           <p>Planets and black holes bend your putt. Touch one and you replay the stroke.</p>
+          <p>Wormholes carry the ball across the course. Stay out of a saucer's beam: it costs a stroke.</p>
           <p>Sink it in as few strokes as you can.</p>
         </div>
       </div>

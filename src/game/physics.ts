@@ -1,4 +1,18 @@
-import type { Aim, BallState, Body, Bounds, Level, Outcome, Rail, ShotResult, Target, Vec2 } from './types.ts'
+import type {
+  Aim,
+  BallState,
+  Body,
+  Bounds,
+  HazardKind,
+  Level,
+  Outcome,
+  Patrol,
+  Rail,
+  Saucer,
+  ShotResult,
+  Target,
+  Vec2,
+} from './types.ts'
 
 /** Fixed physics step. The renderer advances the simulation in whole steps so replays are exact. */
 export const DT = 1 / 240
@@ -29,6 +43,18 @@ export function railPosition(rail: Rail, t: number): Vec2 {
 
 export function bodyPosition(body: Body, t: number): Vec2 {
   return body.rail ? railPosition(body.rail, t) : body.pos
+}
+
+export function patrolPosition(patrol: Patrol, t: number): Vec2 {
+  // 0 at a, 1 at b, easing to a stop at each end.
+  const k = 0.5 - 0.5 * Math.cos(TAU * (t / patrol.period + patrol.phase))
+  return { x: patrol.a.x + (patrol.b.x - patrol.a.x) * k, y: patrol.a.y + (patrol.b.y - patrol.a.y) * k }
+}
+
+export function saucerPosition(saucer: Saucer, t: number): Vec2 {
+  if (saucer.rail) return railPosition(saucer.rail, t)
+  if (saucer.patrol) return patrolPosition(saucer.patrol, t)
+  return saucer.pos
 }
 
 export function targetPosition(target: Target, t: number): Vec2 {
@@ -139,15 +165,29 @@ export function acceleration(level: Level, x: number, y: number, t: number, out:
   return out
 }
 
-export function launchState(level: Level, from: Vec2, rawAim: Aim): BallState {
+/** True when a point is inside either mouth of any wormhole. */
+export function insideWormhole(level: Level, p: Vec2): boolean {
+  for (const w of level.wormholes ?? []) {
+    if (Math.hypot(w.a.x - p.x, w.a.y - p.y) <= w.radius) return true
+    if (Math.hypot(w.b.x - p.x, w.b.y - p.y) <= w.radius) return true
+  }
+  return false
+}
+
+/** `clock` is the course time at the moment of the strike; it sets where every mover is. */
+export function launchState(level: Level, from: Vec2, rawAim: Aim, clock = 0): BallState {
   const aim = clampAim(rawAim)
   const speed = aim.power * level.maxSpeed
   return {
     pos: { x: from.x, y: from.y },
     vel: { x: Math.cos(aim.angle) * speed, y: Math.sin(aim.angle) * speed },
     t: 0,
+    clock,
     bounces: 0,
     lastBounceSpeed: 0,
+    warps: 0,
+    // A ball that stopped in a mouth is played out of it, not sent back through.
+    inWormhole: insideWormhole(level, from),
   }
 }
 
@@ -201,16 +241,39 @@ function collideWalls(level: Level, s: BallState): void {
   }
 }
 
+/** Sends a ball that has just rolled into a wormhole mouth out of the other one, velocity kept. */
+function warp(level: Level, s: BallState): void {
+  const holes = level.wormholes
+  if (!holes || holes.length === 0) return
+  let inside = false
+  for (const w of holes) {
+    const inA = Math.hypot(w.a.x - s.pos.x, w.a.y - s.pos.y) <= w.radius
+    const inB = !inA && Math.hypot(w.b.x - s.pos.x, w.b.y - s.pos.y) <= w.radius
+    if (!inA && !inB) continue
+    inside = true
+    if (s.inWormhole) continue
+    const exit = inA ? w.b : w.a
+    s.pos.x = exit.x
+    s.pos.y = exit.y
+    s.inWormhole = true
+    s.warps++
+    return
+  }
+  if (!inside) s.inWormhole = false
+}
+
 /**
- * One fixed step, in place: velocity-Verlet for gravity, then rolling friction, then walls.
+ * One fixed step, in place: velocity-Verlet for gravity, then rolling friction, then walls, then
+ * wormholes.
  * Friction makes the system dissipative on purpose: this is a putting green, not an orbit.
  */
 export function step(level: Level, s: BallState, dt: number = DT): void {
-  acceleration(level, s.pos.x, s.pos.y, s.t, a0)
+  acceleration(level, s.pos.x, s.pos.y, s.clock, a0)
   s.pos.x += s.vel.x * dt + 0.5 * a0.x * dt * dt
   s.pos.y += s.vel.y * dt + 0.5 * a0.y * dt * dt
   s.t += dt
-  acceleration(level, s.pos.x, s.pos.y, s.t, a1)
+  s.clock += dt
+  acceleration(level, s.pos.x, s.pos.y, s.clock, a1)
   s.vel.x += 0.5 * (a0.x + a1.x) * dt
   s.vel.y += 0.5 * (a0.y + a1.y) * dt
 
@@ -222,46 +285,56 @@ export function step(level: Level, s: BallState, dt: number = DT): void {
     s.vel.y *= k
   }
   collideWalls(level, s)
+  warp(level, s)
 }
 
 export interface OutcomeCheck {
   outcome: Outcome | null
   hazardId: string | null
+  hazardKind: HazardKind | null
   targetDistance: number
 }
 
 const probe: Vec2 = { x: 0, y: 0 }
 
 export function checkOutcome(level: Level, s: BallState): OutcomeCheck {
-  const tp = targetPosition(level.target, s.t)
+  const tp = targetPosition(level.target, s.clock)
   const targetDistance = Math.hypot(tp.x - s.pos.x, tp.y - s.pos.y)
   const speed = Math.hypot(s.vel.x, s.vel.y)
   if (targetDistance <= level.target.radius && speed <= CAPTURE_SPEED) {
-    return { outcome: 'goal', hazardId: null, targetDistance }
+    return { outcome: 'goal', hazardId: null, hazardKind: null, targetDistance }
   }
   for (const body of level.bodies) {
-    const p = bodyPosition(body, s.t)
+    const p = bodyPosition(body, s.clock)
     if (Math.hypot(p.x - s.pos.x, p.y - s.pos.y) <= body.radius + BALL_RADIUS * 0.5) {
-      return { outcome: 'hazard', hazardId: body.id, targetDistance }
+      return { outcome: 'hazard', hazardId: body.id, hazardKind: 'body', targetDistance }
+    }
+  }
+  for (const saucer of level.saucers ?? []) {
+    const p = saucerPosition(saucer, s.clock)
+    if (Math.hypot(p.x - s.pos.x, p.y - s.pos.y) <= saucer.radius) {
+      return { outcome: 'hazard', hazardId: saucer.id, hazardKind: 'saucer', targetDistance }
     }
   }
   // Walls keep the ball in. This only catches a numerical escape, and treats it as out of bounds.
   const b = level.bounds
   if (s.pos.x < b.minX - 1 || s.pos.x > b.maxX + 1 || s.pos.y < b.minY - 1 || s.pos.y > b.maxY + 1) {
-    return { outcome: 'hazard', hazardId: null, targetDistance }
+    return { outcome: 'hazard', hazardId: null, hazardKind: 'bounds', targetDistance }
   }
-  if (s.t >= MAX_SHOT_TIME) return { outcome: 'rest', hazardId: null, targetDistance }
+  if (s.t >= MAX_SHOT_TIME) return { outcome: 'rest', hazardId: null, hazardKind: null, targetDistance }
   if (speed < REST_SPEED) {
     // At rest only if friction can hold the ball against the local pull. Otherwise it rolls on.
-    acceleration(level, s.pos.x, s.pos.y, s.t, probe)
-    if (Math.hypot(probe.x, probe.y) <= ROLL_DECEL) return { outcome: 'rest', hazardId: null, targetDistance }
+    acceleration(level, s.pos.x, s.pos.y, s.clock, probe)
+    if (Math.hypot(probe.x, probe.y) <= ROLL_DECEL) {
+      return { outcome: 'rest', hazardId: null, hazardKind: null, targetDistance }
+    }
   }
-  return { outcome: null, hazardId: null, targetDistance }
+  return { outcome: null, hazardId: null, hazardKind: null, targetDistance }
 }
 
 /** Plays one whole shot headlessly. Used by tests and the course solver, never by the render loop. */
-export function simulate(level: Level, from: Vec2, aim: Aim): ShotResult {
-  const s = launchState(level, from, aim)
+export function simulate(level: Level, from: Vec2, aim: Aim, clock = 0): ShotResult {
+  const s = launchState(level, from, aim, clock)
   let closest = Infinity
   for (;;) {
     // The ball is struck with speed, so the very first check cannot report 'rest'.
@@ -271,10 +344,12 @@ export function simulate(level: Level, from: Vec2, aim: Aim): ShotResult {
       return {
         outcome: c.outcome,
         hazardId: c.hazardId,
+        hazardKind: c.hazardKind,
         time: s.t,
         closest,
         end: { x: s.pos.x, y: s.pos.y },
         bounces: s.bounces,
+        warps: s.warps,
       }
     }
     step(level, s)
@@ -283,15 +358,26 @@ export function simulate(level: Level, from: Vec2, aim: Aim): ShotResult {
 
 /**
  * The aiming preview: flat [x0, y0, x1, y1, ...] sampled every `stride` steps, bounces included.
- * It stops when the shot would end, so the preview never draws through a planet.
+ * It stops when the shot would end, so the preview never draws through a planet. `clock` is the
+ * course time the shot would be struck at.
  */
-export function predictPath(level: Level, from: Vec2, aim: Aim, seconds: number, stride = 4): number[] {
-  const s = launchState(level, from, aim)
+export function predictPath(
+  level: Level,
+  from: Vec2,
+  aim: Aim,
+  seconds: number,
+  stride = 4,
+  clock = 0,
+): number[] {
+  const s = launchState(level, from, aim, clock)
   const points = [s.pos.x, s.pos.y]
   const steps = Math.round(seconds / DT)
   for (let i = 1; i <= steps; i++) {
+    const warps = s.warps
     step(level, s)
-    const done = checkOutcome(level, s).outcome !== null
+    // The preview ends at a wormhole mouth: where the ball comes out is for the player to learn.
+    const done = checkOutcome(level, s).outcome !== null || s.warps !== warps
+    if (done && s.warps !== warps) break
     if (i % stride === 0 || done) points.push(s.pos.x, s.pos.y)
     if (done) break
   }
@@ -299,7 +385,7 @@ export function predictPath(level: Level, from: Vec2, aim: Aim, seconds: number,
 }
 
 /** Aim from a point straight at the cup: the default whenever the ball comes to rest. */
-export function defaultAim(level: Level, from: Vec2): Aim {
-  const t = targetPosition(level.target, 0)
+export function defaultAim(level: Level, from: Vec2, clock = 0): Aim {
+  const t = targetPosition(level.target, clock)
   return { angle: Math.atan2(t.y - from.y, t.x - from.x), power: 0.5 }
 }

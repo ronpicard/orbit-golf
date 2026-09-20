@@ -8,6 +8,7 @@ import {
   CAPTURE_SPEED,
   MAX_SHOT_TIME,
   railPosition,
+  patrolPosition,
   clampAim,
   courseBounds,
   pointInPolygon,
@@ -20,7 +21,7 @@ import {
   predictPath,
   defaultAim,
 } from './physics.ts'
-import type { Aim, BallState, Body, Level, Rail, Vec2 } from './types.ts'
+import type { Aim, BallState, Body, Level, Patrol, Rail, Vec2 } from './types.ts'
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -326,6 +327,9 @@ test('a ball already touching a wall and heading away from it is not reflected',
     pos: { x: 100 - BALL_RADIUS, y: 20 },
     vel: { x: -3, y: 0 },
     t: 0,
+    clock: 0,
+    warps: 0,
+    inWormhole: false,
     bounces: 0,
     lastBounceSpeed: 0,
   }
@@ -424,7 +428,16 @@ test('an asteroid (mu 0) is a hazard but adds no acceleration', () => {
   assert.equal(out.x, 0)
   assert.equal(out.y, 0)
 
-  const s: BallState = { pos: { x: 3, y: 5 }, vel: { x: 1, y: 0 }, t: 0, bounces: 0, lastBounceSpeed: 0 }
+  const s: BallState = {
+    pos: { x: 3, y: 5 },
+    vel: { x: 1, y: 0 },
+    t: 0,
+    clock: 0,
+    warps: 0,
+    inWormhole: false,
+    bounces: 0,
+    lastBounceSpeed: 0,
+  }
   const outcome = checkOutcome(level, s)
   // Not yet within the hazard radius, so not yet a hazard.
   assert.equal(outcome.outcome, null)
@@ -438,11 +451,29 @@ test('a moon on a rail is only a hazard when it is actually there at that time',
   const rail: Rail = { center: { x: 60, y: 20 }, radius: 10, period: 20, phase: 0 }
   const moon = bodyFixture({ id: 'moon-1', kind: 'moon', mu: 0, radius: 2, pos: { x: 0, y: 0 }, rail })
   const level = makeLevel({ bodies: [moon] })
-  // At t=0 the moon sits at (70, 20) (center + radius on the phase=0 direction).
-  const sAt = { pos: { x: 70, y: 20 }, vel: { x: 0, y: 0 }, t: 0, bounces: 0, lastBounceSpeed: 0 }
+  // At clock=0 the moon sits at (70, 20) (center + radius on the phase=0 direction).
+  const sAt: BallState = {
+    pos: { x: 70, y: 20 },
+    vel: { x: 0, y: 0 },
+    t: 0,
+    clock: 0,
+    warps: 0,
+    inWormhole: false,
+    bounces: 0,
+    lastBounceSpeed: 0,
+  }
   assert.equal(checkOutcome(level, sAt).outcome, 'hazard')
-  // At the same spatial point but a different time, the moon has moved away.
-  const sAway = { pos: { x: 70, y: 20 }, vel: { x: 0, y: 0 }, t: 5, bounces: 0, lastBounceSpeed: 0 }
+  // At the same spatial point but a different course clock, the moon has moved away.
+  const sAway: BallState = {
+    pos: { x: 70, y: 20 },
+    vel: { x: 0, y: 0 },
+    t: 0,
+    clock: 5,
+    warps: 0,
+    inWormhole: false,
+    bounces: 0,
+    lastBounceSpeed: 0,
+  }
   assert.notEqual(checkOutcome(level, sAway).outcome, 'hazard')
 })
 
@@ -474,7 +505,16 @@ test('a stationary ball near a heavy body (|accel| > ROLL_DECEL) is not at rest 
   acceleration(level, 11.5, 10, 0, probe)
   assert.ok(Math.hypot(probe.x, probe.y) > ROLL_DECEL, 'fixture check: acceleration should exceed ROLL_DECEL')
 
-  const s: BallState = { pos: { x: 11.5, y: 10 }, vel: { x: 0, y: 0 }, t: 0, bounces: 0, lastBounceSpeed: 0 }
+  const s: BallState = {
+    pos: { x: 11.5, y: 10 },
+    vel: { x: 0, y: 0 },
+    t: 0,
+    clock: 0,
+    warps: 0,
+    inWormhole: false,
+    bounces: 0,
+    lastBounceSpeed: 0,
+  }
   const immediate = checkOutcome(level, s)
   assert.notEqual(immediate.outcome, 'rest')
 
@@ -495,7 +535,16 @@ test('a stationary ball far from any body (|accel| <= ROLL_DECEL) reports rest i
   acceleration(level, 80, 20, 0, probe)
   assert.ok(Math.hypot(probe.x, probe.y) <= ROLL_DECEL, 'fixture check: acceleration should be small far away')
 
-  const s: BallState = { pos: { x: 80, y: 20 }, vel: { x: 0, y: 0 }, t: 0, bounces: 0, lastBounceSpeed: 0 }
+  const s: BallState = {
+    pos: { x: 80, y: 20 },
+    vel: { x: 0, y: 0 },
+    t: 0,
+    clock: 0,
+    warps: 0,
+    inWormhole: false,
+    bounces: 0,
+    lastBounceSpeed: 0,
+  }
   const outcome = checkOutcome(level, s)
   assert.equal(outcome.outcome, 'rest')
 })
@@ -579,9 +628,156 @@ test('MAX_SHOT_TIME forces rest even while still moving', () => {
     pos: { x: 50, y: 20 },
     vel: { x: 3, y: 0 },
     t: MAX_SHOT_TIME,
+    clock: 0,
+    warps: 0,
+    inWormhole: false,
     bounces: 0,
     lastBounceSpeed: 0,
   }
   const outcome = checkOutcome(level, s)
   assert.equal(outcome.outcome, 'rest')
+})
+
+// ---------------------------------------------------------------------------
+// hazardKind
+// ---------------------------------------------------------------------------
+
+test('a body hazard reports hazardKind body', () => {
+  const planet = bodyFixture({ id: 'planet-x', pos: { x: 60, y: 20 }, mu: 5, radius: 2 })
+  const level = makeLevel({ bodies: [planet], target: { pos: { x: -1000, y: -1000 }, radius: 0.01 } })
+  const result = simulate(level, { x: 50, y: 20 }, { angle: 0, power: 1 })
+  assert.equal(result.outcome, 'hazard')
+  assert.equal(result.hazardKind, 'body')
+})
+
+// ---------------------------------------------------------------------------
+// Course clock
+// ---------------------------------------------------------------------------
+
+test('simulate with a non-zero clock moves a railed body accordingly (shot outcome differs between two clocks)', () => {
+  // A slow-moving rail: over the few seconds a shot takes, the body barely moves, so the
+  // starting clock alone decides whether it is on the ball's path.
+  const rail: Rail = { center: { x: 60, y: 20 }, radius: 10, period: 1000, phase: 0 }
+  const moon = bodyFixture({ id: 'moon-1', kind: 'moon', mu: 0, radius: 2, pos: { x: 0, y: 0 }, rail })
+  const level = makeLevel({ bodies: [moon], target: { pos: { x: -1000, y: -1000 }, radius: 0.01 } })
+  const from = { x: 50, y: 20 }
+  const aim: Aim = { angle: 0, power: 1 }
+  // At clock=0 the moon sits at (70, 20), directly on the path.
+  const atZero = simulate(level, from, aim, 0)
+  // A quarter period later the moon sits at (60, 30), well off the path.
+  const atQuarter = simulate(level, from, aim, 250)
+  assert.equal(atZero.outcome, 'hazard')
+  assert.equal(atZero.hazardId, 'moon-1')
+  assert.notEqual(atQuarter.outcome, 'hazard')
+})
+
+// ---------------------------------------------------------------------------
+// Wormholes
+// ---------------------------------------------------------------------------
+
+const WORMHOLE_COURSE: Vec2[] = [
+  { x: 0, y: 0 },
+  { x: 250, y: 0 },
+  { x: 250, y: 40 },
+  { x: 0, y: 40 },
+]
+
+function wormholeLevel(overrides: Partial<Level> = {}): Level {
+  return makeLevel({
+    course: WORMHOLE_COURSE,
+    wormholes: [{ id: 'w1', a: { x: 50, y: 20 }, b: { x: 150, y: 20 }, radius: 1 }],
+    target: { pos: { x: -1000, y: -1000 }, radius: 0.01 },
+    ...overrides,
+  })
+}
+
+test('a ball rolled into wormhole mouth A exits mouth B with velocity kept, warps once, and does not bounce straight back', () => {
+  const level = wormholeLevel()
+  const s = launchState(level, { x: 48, y: 20 }, { angle: 0, power: 1 })
+  let warped = false
+  let velAfterWarp: Vec2 | null = null
+  for (let i = 0; i < 3000 && !warped; i++) {
+    const prevWarps = s.warps
+    step(level, s)
+    if (s.warps > prevWarps) {
+      warped = true
+      velAfterWarp = { x: s.vel.x, y: s.vel.y }
+    }
+  }
+  assert.ok(warped, 'ball never warped')
+  assert.ok(Math.hypot(s.pos.x - 150, s.pos.y - 20) < 1 + 1e-6, 'should exit near mouth b')
+  assert.ok((velAfterWarp as Vec2).x > 0, 'velocity direction should be kept (still moving +x)')
+
+  // Rolling on afterward should not warp again, even as it passes near mouth b again.
+  for (let i = 0; i < 3000; i++) {
+    step(level, s)
+    if (checkOutcome(level, s).outcome) break
+  }
+  assert.equal(s.warps, 1)
+})
+
+test('a stroke that starts inside a wormhole mouth is not teleported', () => {
+  const level = wormholeLevel()
+  const s = launchState(level, { x: 50, y: 20 }, { angle: -Math.PI / 2, power: 0.5 })
+  assert.equal(s.inWormhole, true)
+  for (let i = 0; i < 3000; i++) {
+    step(level, s)
+    if (checkOutcome(level, s).outcome) break
+  }
+  assert.equal(s.warps, 0)
+})
+
+test('predictPath stops at the wormhole mouth, never nearing the far mouth', () => {
+  const level = wormholeLevel()
+  const from = { x: 42, y: 20 }
+  const path = predictPath(level, from, { angle: 0, power: 1 }, 5)
+  const lastX = path[path.length - 2]
+  const lastY = path[path.length - 1]
+  assert.ok(
+    Math.hypot(lastX - 50, lastY - 20) <= 1 + 0.2,
+    `expected the path to stop near mouth a, ended at (${lastX}, ${lastY})`,
+  )
+  for (let i = 0; i < path.length; i += 2) {
+    assert.ok(Math.hypot(path[i] - 150, path[i + 1] - 20) > 1, 'path should never near mouth b')
+  }
+})
+
+// ---------------------------------------------------------------------------
+// Saucers
+// ---------------------------------------------------------------------------
+
+test('a ball that crosses a stationary saucer beam ends hazard with hazardKind saucer', () => {
+  const level = makeLevel({
+    saucers: [{ id: 'ufo-1', radius: 2, pos: { x: 60, y: 20 } }],
+    target: { pos: { x: -1000, y: -1000 }, radius: 0.01 },
+  })
+  const result = simulate(level, { x: 50, y: 20 }, { angle: 0, power: 1 })
+  assert.equal(result.outcome, 'hazard')
+  assert.equal(result.hazardKind, 'saucer')
+  assert.equal(result.hazardId, 'ufo-1')
+})
+
+test('a patrolling saucer only catches the ball when it is actually there', () => {
+  const patrol: Patrol = { a: { x: 60, y: 20 }, b: { x: 60, y: 35 }, period: 10, phase: 0 }
+  const level = makeLevel({
+    saucers: [{ id: 'ufo-1', radius: 1.5, pos: { x: 0, y: 0 }, patrol }],
+    target: { pos: { x: -1000, y: -1000 }, radius: 0.01 },
+  })
+  const from = { x: 50, y: 20 }
+  const aim: Aim = { angle: 0, power: 1 }
+  const atZero = simulate(level, from, aim, 0)
+  const atHalf = simulate(level, from, aim, patrol.period / 2)
+  assert.equal(atZero.outcome, 'hazard')
+  assert.equal(atZero.hazardKind, 'saucer')
+  assert.notEqual(atHalf.outcome, 'hazard')
+})
+
+test('patrolPosition sits at a, at b halfway, and back at a after one full period', () => {
+  const patrol: Patrol = { a: { x: 0, y: 0 }, b: { x: 10, y: 0 }, period: 8, phase: 0 }
+  const p0 = patrolPosition(patrol, 0)
+  const pHalf = patrolPosition(patrol, patrol.period / 2)
+  const pFull = patrolPosition(patrol, patrol.period)
+  assert.ok(Math.abs(p0.x - patrol.a.x) < 1e-9 && Math.abs(p0.y - patrol.a.y) < 1e-9)
+  assert.ok(Math.abs(pHalf.x - patrol.b.x) < 1e-9 && Math.abs(pHalf.y - patrol.b.y) < 1e-9)
+  assert.ok(Math.abs(pFull.x - patrol.a.x) < 1e-9 && Math.abs(pFull.y - patrol.a.y) < 1e-9)
 })

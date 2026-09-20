@@ -84,6 +84,19 @@ function buildDistanceField(level: Level, cell: number): { dist: Map<string, num
       dist.set(k, d + 1)
       queue.push(np)
     }
+    // A wormhole mouth is one step from its twin, so the field sees the shortcut.
+    for (const w of level.wormholes ?? []) {
+      for (const [from, to] of [
+        [w.a, w.b],
+        [w.b, w.a],
+      ]) {
+        if (Math.hypot(from.x - p.x, from.y - p.y) > w.radius) continue
+        const k = key(to.x, to.y)
+        if (dist.has(k)) continue
+        dist.set(k, d + 1)
+        queue.push({ x: Math.round(to.x / cell) * cell, y: Math.round(to.y / cell) * cell })
+      }
+    }
   }
   void goalKey
   return { dist, cell }

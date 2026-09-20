@@ -503,7 +503,8 @@ export function createWellMaterial(maskTexture: THREE.Texture): THREE.ShaderMate
         vec2 toFrag = normalize(vGridXZ - uCameraPos.xz + vec2(0.0001));
         float farWall = smoothstep(0.05, 0.6, dot(normalize(gradient + vec2(0.0001)), toFrag)) * smoothstep(0.1, 1.0, slope);
 
-        float depthN = clamp(vDepth / 2.4, 0.0, 1.0);
+        // Hills (negative depth) are tinted like wells of the same size.
+        float depthN = clamp(abs(vDepth) / 2.4, 0.0, 1.0);
 
         // Turf fill: emerald/teal on the flats, mowing stripes every 2 units along x, darkening to indigo.
         vec3 low = ${glslColor(COLOR_FAIRWAY_LOW)};
@@ -564,23 +565,28 @@ export function createBumperMaterial(): THREE.ShaderMaterial {
     vertexShader: `
       varying vec2 vUv;
       varying vec3 vWorldPos;
+      varying float vStripe;
       void main() {
         vUv = uv;
         vec4 world = modelMatrix * vec4(position, 1.0);
         vWorldPos = world.xyz;
+        // Distance along the wall in world units, so stripes stay one size and run unbroken
+        // across the short pieces a wall is built from.
+        vStripe = dot(world.xyz, normalize(modelMatrix[0].xyz));
         gl_Position = projectionMatrix * viewMatrix * world;
       }
     `,
     fragmentShader: `
       varying vec2 vUv;
       varying vec3 vWorldPos;
+      varying float vStripe;
       uniform float uTime;
       uniform vec3 uColorA;
       uniform vec3 uColorB;
       uniform vec3 uFlashPos;
       uniform float uFlashAge;
       void main() {
-        float seg = step(0.5, fract(vUv.x * 10.0 - uTime * 0.35));
+        float seg = step(0.5, fract(vStripe * 0.5 - uTime * 0.35));
         vec3 col = mix(uColorA, uColorB, seg);
         float shade = 0.6 + 0.4 * sin(vUv.y * 3.14159);
         vec3 lit = col * shade * 1.3;

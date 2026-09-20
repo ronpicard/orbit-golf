@@ -29,6 +29,7 @@ export default function GameCanvas({ events, onReady }: GameCanvasProps) {
       onAimChange: (aim, dragging) => eventsRef.current.onAimChange(aim, dragging),
       onLaunch: (aim) => eventsRef.current.onLaunch(aim),
       onBounce: (speed) => eventsRef.current.onBounce(speed),
+      onWarp: () => eventsRef.current.onWarp(),
       onResult: (result) => eventsRef.current.onResult(result),
       onLieChange: (lie) => eventsRef.current.onLieChange(lie),
       onTap: (pos) => eventsRef.current.onTap(pos),

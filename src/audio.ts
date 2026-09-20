@@ -22,6 +22,10 @@ export interface GameAudio {
   bounce(speed: number): void
   /** Classic ball-in-cup rattle: a few quick decaying clicks then a low hollow thunk. */
   cupDrop(): void
+  /** Sci-fi whoosh for a wormhole trip: sine sweeping up then down, about 0.35 s. */
+  warp(): void
+  /** Tractor-beam abduction: a rising wobbling tone ending in a short blip, about 0.8 s. */
+  abduct(): void
 }
 
 const MASTER_GAIN = 0.35
@@ -778,5 +782,122 @@ export function createAudio(): GameAudio {
     }
   }
 
-  return { unlock, setMuted, launch, goal, crash, lost, tick, cheer, groan, swing, bounce, cupDrop }
+  function warp(): void {
+    if (!canPlay() || !ctx || !master) return
+    try {
+      const context = ctx
+      const out = master
+      const now = context.currentTime
+      const duration = 0.35
+      const peakAt = now + duration * 0.45
+
+      const osc = context.createOscillator()
+      osc.type = 'sine'
+      osc.frequency.setValueAtTime(200, now)
+      osc.frequency.exponentialRampToValueAtTime(1400, peakAt)
+      osc.frequency.exponentialRampToValueAtTime(200, now + duration)
+
+      const detuned = context.createOscillator()
+      detuned.type = 'sine'
+      detuned.detune.value = 18
+      detuned.frequency.setValueAtTime(200, now)
+      detuned.frequency.exponentialRampToValueAtTime(1400, peakAt)
+      detuned.frequency.exponentialRampToValueAtTime(200, now + duration)
+
+      const gain = context.createGain()
+      gain.gain.setValueAtTime(0.0001, now)
+      gain.gain.exponentialRampToValueAtTime(0.3, peakAt)
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + duration)
+
+      const detunedGain = context.createGain()
+      detunedGain.gain.setValueAtTime(0.0001, now)
+      detunedGain.gain.exponentialRampToValueAtTime(0.15, peakAt)
+      detunedGain.gain.exponentialRampToValueAtTime(0.0001, now + duration)
+
+      osc.connect(gain)
+      gain.connect(out)
+      detuned.connect(detunedGain)
+      detunedGain.connect(out)
+
+      osc.onended = () => {
+        osc.disconnect()
+        gain.disconnect()
+      }
+      detuned.onended = () => {
+        detuned.disconnect()
+        detunedGain.disconnect()
+      }
+      osc.start(now)
+      osc.stop(now + duration + 0.02)
+      detuned.start(now)
+      detuned.stop(now + duration + 0.02)
+    } catch {
+      // no-op
+    }
+  }
+
+  function abduct(): void {
+    if (!canPlay() || !ctx || !master) return
+    try {
+      const context = ctx
+      const out = master
+      const now = context.currentTime
+      const riseDuration = 0.65
+      const blipAt = now + riseDuration
+      const blipDuration = 0.15
+
+      const osc = context.createOscillator()
+      osc.type = 'triangle'
+      osc.frequency.setValueAtTime(300, now)
+      osc.frequency.exponentialRampToValueAtTime(900, blipAt)
+
+      const lfo = context.createOscillator()
+      lfo.type = 'sine'
+      lfo.frequency.value = 7
+      const lfoGain = context.createGain()
+      lfoGain.gain.value = 40
+      lfo.connect(lfoGain)
+      lfoGain.connect(osc.frequency)
+
+      const gain = context.createGain()
+      gain.gain.setValueAtTime(0.0001, now)
+      gain.gain.exponentialRampToValueAtTime(0.22, now + 0.1)
+      gain.gain.setValueAtTime(0.22, blipAt - 0.02)
+      gain.gain.exponentialRampToValueAtTime(0.0001, blipAt)
+
+      osc.connect(gain)
+      gain.connect(out)
+
+      const blip = context.createOscillator()
+      blip.type = 'sine'
+      blip.frequency.setValueAtTime(1200, blipAt)
+      const blipGain = context.createGain()
+      blipGain.gain.setValueAtTime(0.0001, blipAt)
+      blipGain.gain.exponentialRampToValueAtTime(0.25, blipAt + 0.01)
+      blipGain.gain.exponentialRampToValueAtTime(0.0001, blipAt + blipDuration)
+      blip.connect(blipGain)
+      blipGain.connect(out)
+
+      osc.onended = () => {
+        osc.disconnect()
+        gain.disconnect()
+        lfo.disconnect()
+        lfoGain.disconnect()
+      }
+      blip.onended = () => {
+        blip.disconnect()
+        blipGain.disconnect()
+      }
+      osc.start(now)
+      osc.stop(blipAt + 0.02)
+      lfo.start(now)
+      lfo.stop(blipAt + 0.02)
+      blip.start(blipAt)
+      blip.stop(blipAt + blipDuration + 0.02)
+    } catch {
+      // no-op
+    }
+  }
+
+  return { unlock, setMuted, launch, goal, crash, lost, tick, cheer, groan, swing, bounce, cupDrop, warp, abduct }
 }

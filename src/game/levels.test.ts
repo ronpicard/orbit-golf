@@ -10,6 +10,7 @@ import {
   onFairway,
   pointInPolygon,
   railPosition,
+  saucerPosition,
   simulate,
   ROLL_DECEL,
 } from './physics.ts'
@@ -73,13 +74,19 @@ function fairwayConnected(level: Level, cell = 0.5): boolean {
   let head = 0
   while (head < queue.length) {
     const p = queue[head++]
-    for (const [dx, dy] of [
-      [cell, 0],
-      [-cell, 0],
-      [0, cell],
-      [0, -cell],
-    ]) {
-      const np = { x: p.x + dx, y: p.y + dy }
+    const neighbors: Vec2[] = [
+      { x: p.x + cell, y: p.y },
+      { x: p.x - cell, y: p.y },
+      { x: p.x, y: p.y + cell },
+      { x: p.x, y: p.y - cell },
+    ]
+    // A cell within a wormhole mouth links straight through to the cell at its other mouth: a
+    // ball rolling into one comes out the other, so the flood fill must be able to too.
+    for (const w of level.wormholes ?? []) {
+      if (Math.hypot(p.x - w.a.x, p.y - w.a.y) <= w.radius) neighbors.push(w.b)
+      if (Math.hypot(p.x - w.b.x, p.y - w.b.y) <= w.radius) neighbors.push(w.a)
+    }
+    for (const np of neighbors) {
       const k = key(np.x, np.y)
       if (visited.has(k)) continue
       if (!onFairway(level, np)) continue
@@ -150,6 +157,53 @@ for (const level of LEVELS) {
         const p = railPosition(rail, t)
         assert.ok(onFairway(level, p), `rail leaves fairway at sample ${k}`)
         assert.ok(minWallDist(level, p) >= rail.clearance, `rail too close to a wall at sample ${k}`)
+      }
+    }
+  })
+
+  test(`${level.id}: wormhole mouths sit on the fairway, clear of the tee, cup, and every body`, () => {
+    for (const w of level.wormholes ?? []) {
+      assert.ok(onFairway(level, w.a), `wormhole ${w.id} mouth a not on fairway`)
+      assert.ok(onFairway(level, w.b), `wormhole ${w.id} mouth b not on fairway`)
+
+      const dTeeA = Math.hypot(w.a.x - level.tee.x, w.a.y - level.tee.y)
+      const dTeeB = Math.hypot(w.b.x - level.tee.x, w.b.y - level.tee.y)
+      assert.ok(dTeeA >= w.radius + 0.3, `wormhole ${w.id} mouth a too close to the tee`)
+      assert.ok(dTeeB >= w.radius + 0.3, `wormhole ${w.id} mouth b too close to the tee`)
+
+      const dCupA = Math.hypot(w.a.x - level.target.pos.x, w.a.y - level.target.pos.y)
+      const dCupB = Math.hypot(w.b.x - level.target.pos.x, w.b.y - level.target.pos.y)
+      assert.ok(dCupA >= w.radius + 0.3, `wormhole ${w.id} mouth a too close to the cup`)
+      assert.ok(dCupB >= w.radius + 0.3, `wormhole ${w.id} mouth b too close to the cup`)
+
+      for (const b of level.bodies) {
+        const bp = bodyPosition(b, 0)
+        const dA = Math.hypot(w.a.x - bp.x, w.a.y - bp.y)
+        const dB = Math.hypot(w.b.x - bp.x, w.b.y - bp.y)
+        assert.ok(dA >= w.radius + 0.3, `wormhole ${w.id} mouth a too close to body ${b.id}`)
+        assert.ok(dB >= w.radius + 0.3, `wormhole ${w.id} mouth b too close to body ${b.id}`)
+      }
+
+      const dAB = Math.hypot(w.a.x - w.b.x, w.a.y - w.b.y)
+      assert.ok(dAB >= 2 * w.radius, `wormhole ${w.id} mouths overlap`)
+    }
+  })
+
+  test(`${level.id}: saucers stay on the fairway and their beam never covers the tee or a stationary cup`, () => {
+    for (const s of level.saucers ?? []) {
+      const period = s.rail ? s.rail.period : s.patrol ? s.patrol.period : 1
+      for (let k = 0; k < 48; k++) {
+        const t = (k / 48) * period
+        const p = saucerPosition(s, t)
+        assert.ok(onFairway(level, p), `saucer ${s.id} leaves the fairway at sample ${k}`)
+
+        const dTee = Math.hypot(p.x - level.tee.x, p.y - level.tee.y)
+        assert.ok(dTee >= s.radius, `saucer ${s.id} beam covers the tee at sample ${k}`)
+
+        if (!level.target.rail) {
+          const dCup = Math.hypot(p.x - level.target.pos.x, p.y - level.target.pos.y)
+          assert.ok(dCup >= s.radius, `saucer ${s.id} beam covers the cup at sample ${k}`)
+        }
       }
     }
   })

@@ -1,4 +1,4 @@
-import type { Body, BodyKind, Level, Rail, Vec2 } from './types.ts'
+import type { Body, BodyKind, Level, Rail, Saucer, Vec2, Wormhole } from './types.ts'
 import { courseBounds } from './physics.ts'
 
 // -- Vector helpers -----------------------------------------------------------------------------
@@ -54,6 +54,29 @@ function body(
   return rail
     ? { id, kind, mu: scaled, radius, pos, palette, rail }
     : { id, kind, mu: scaled, radius, pos, palette }
+}
+
+/** Hangs a body above the sheet: the fairway rises toward it instead of dipping. Same pull. */
+function above(b: Body): Body {
+  return { ...b, side: 'above' }
+}
+
+function wormhole(id: string, a: Vec2, b: Vec2, radius = 0.7): Wormhole {
+  return { id, a, b, radius }
+}
+
+/** A saucer flying back and forth between two points. `period` is the full there-and-back time. */
+function patrolSaucer(id: string, a: Vec2, b: Vec2, period: number, radius = 0.9): Saucer {
+  return { id, radius, pos: a, patrol: { a, b, period, phase: 0 } }
+}
+
+function railSaucer(id: string, rail: Rail, radius = 0.9): Saucer {
+  return {
+    id,
+    radius,
+    pos: v(rail.center.x + rail.radius * Math.cos(rail.phase), rail.center.y + rail.radius * Math.sin(rail.phase)),
+    rail,
+  }
 }
 
 function rect(cx: number, cy: number, hw: number, hh: number): Vec2[] {
@@ -190,7 +213,7 @@ export const SANDBOX_LEVEL: Level = makeLevel({
   islands: [],
   bodies: [],
   target: { pos: v(13, 0), radius: 0.6 },
-  maxSpeed: 12,
+  maxSpeed: 15,
 })
 
 // -- Hole 1: straight lane, one small planet beside the line --------------------------------------
@@ -205,7 +228,7 @@ const l01 = makeLevel({
   islands: [],
   bodies: [body('p1', 'planet', 6, 0.7, v(-2, 1.5), ORANGE)],
   target: { pos: v(14, 0), radius: 0.6 },
-  maxSpeed: 12,
+  maxSpeed: 15,
 })
 
 // -- Hole 2: gentle dogleg (one 45-degree bend) with a planet on the inside -----------------------
@@ -218,9 +241,9 @@ const l02 = makeLevel({
   tee: v(-14, -3),
   course: corridor([v(-14, -3), v(-1, -3), v(9, 7)], { width: 3 }),
   islands: [],
-  bodies: [body('p1', 'planet', 9, 0.8, v(-4, -1.5), CYAN)],
+  bodies: [above(body('p1', 'planet', 9, 0.8, v(-4, -1.5), CYAN))],
   target: { pos: v(9, 7), radius: 0.6 },
-  maxSpeed: 12,
+  maxSpeed: 15,
 })
 
 // -- Hole 3: L-shape, 90-degree turn --------------------------------------------------------------
@@ -235,7 +258,7 @@ const l03 = makeLevel({
   islands: [],
   bodies: [body('p1', 'planet', 11, 0.9, v(-3, -2.7), PINK)],
   target: { pos: v(2, 8), radius: 0.6 },
-  maxSpeed: 12,
+  maxSpeed: 15,
 })
 
 // -- Hole 4: straight lane, big planet dead centre (slingshot) -------------------------------------
@@ -250,22 +273,23 @@ const l04 = makeLevel({
   islands: [],
   bodies: [body('p1', 'planet', 20, 1.3, v(0, 0), PURPLE)],
   target: { pos: v(14, 0), radius: 0.6 },
-  maxSpeed: 12,
+  maxSpeed: 15,
 })
 
-// -- Hole 5: S-curve (two opposite bends) ----------------------------------------------------------
+// -- Hole 5: S-curve (two opposite bends), a saucer sweeping across the middle ---------------------
 
 const l05 = makeLevel({
   id: 'l05',
   name: 'S-Curve',
-  hint: 'Putt along the near wall and let each bend carry your ball into the next.',
+  hint: 'Watch the saucer sweep the middle lane and putt through when its beam swings clear.',
   par: 3,
   tee: v(-14, -5),
   course: corridor([v(-14, -5), v(-5, -5), v(5, 5), v(14, 5)], { width: 2.2 }),
   islands: [],
   bodies: [],
+  saucers: [patrolSaucer('ufo', v(-1.3, 1.3), v(1.3, -1.3), 6)],
   target: { pos: v(14, 5), radius: 0.6 },
-  maxSpeed: 12,
+  maxSpeed: 15,
 })
 
 // -- Hole 6: wide room, chicane islands, patrolling moon --------------------------------------------
@@ -287,7 +311,7 @@ const l06 = makeLevel({
     }),
   ],
   target: { pos: v(14, 0), radius: 0.6 },
-  maxSpeed: 12,
+  maxSpeed: 15,
 })
 
 // -- Hole 7: U-turn, planet at the pivot ------------------------------------------------------------
@@ -300,9 +324,9 @@ const l07 = makeLevel({
   tee: v(-14, 3),
   course: corridor([v(-14, 3), v(6, 3), v(6, -3), v(-14, -3)], { width: 1.9 }),
   islands: [],
-  bodies: [body('p1', 'planet', 14, 0.8, v(6, 0), LIME)],
+  bodies: [above(body('p1', 'planet', 14, 0.8, v(6, 0), LIME))],
   target: { pos: v(-14, -3), radius: 0.6 },
-  maxSpeed: 12,
+  maxSpeed: 15,
 })
 
 // -- Hole 8: black hole in a wide bowl room, cup beyond ----------------------------------------------
@@ -317,22 +341,25 @@ const l08 = makeLevel({
   islands: [],
   bodies: [body('bh', 'blackhole', 32, 0.5, v(0, 0), HOLE_A)],
   target: { pos: v(9.5, 0), radius: 0.6 },
-  maxSpeed: 12,
+  maxSpeed: 15,
 })
 
-// -- Hole 9: zigzag corridor, three turns --------------------------------------------------------
+// -- Hole 9: two sealed rooms joined only by a wormhole ---------------------------------------------
 
 const l09 = makeLevel({
   id: 'l09',
-  name: 'Zigzag',
-  hint: 'Play into each turn in sequence and ride the chamfers all the way home.',
+  name: 'Wormhole',
+  hint: 'The wall seals the cup off. Putt into the violet wormhole and come out the other side.',
   par: 3,
-  tee: v(-16, -6),
-  course: corridor([v(-16, -6), v(-4, -6), v(-4, 2), v(8, 2), v(8, 8)], { width: 2 }),
-  islands: [],
-  bodies: [],
-  target: { pos: v(8, 8), radius: 0.6 },
-  maxSpeed: 12,
+  tee: v(-13, -1),
+  course: rect(0, 0, 16, 6),
+  // The dividing wall stops a hair short of the outer walls: far too tight for the ball, so the
+  // two rooms are sealed from each other.
+  islands: [rect(0, 0, 0.6, 5.98)],
+  bodies: [body('p1', 'planet', 9, 0.8, v(8, 2.5), ROSE)],
+  wormholes: [wormhole('w1', v(-4, 2.5), v(4, -3))],
+  target: { pos: v(13, 1), radius: 0.6 },
+  maxSpeed: 15,
 })
 
 // -- Hole 10: funnel, two small planets guarding the neck --------------------------------------------
@@ -346,11 +373,11 @@ const l10 = makeLevel({
   course: corridor([v(-14, 0), v(0, 0), v(14, 0)], { width: [4, 1.8, 3.2] }),
   islands: [],
   bodies: [
-    body('p1', 'planet', 5, 0.55, v(-1.4, 0.8), ORANGE),
+    above(body('p1', 'planet', 5, 0.55, v(-1.4, 0.8), ORANGE)),
     body('p2', 'planet', 5, 0.55, v(1.4, -0.8), CYAN),
   ],
   target: { pos: v(14, 0), radius: 0.6 },
-  maxSpeed: 12,
+  maxSpeed: 15,
 })
 
 // -- Hole 11: T-junction, obvious branch is a dead end with a black hole -----------------------------
@@ -376,7 +403,7 @@ const l11 = makeLevel({
   islands: [],
   bodies: [body('bh', 'blackhole', 30, 0.45, v(-2, 7), HOLE_B)],
   target: { pos: v(-2, -7), radius: 0.6 },
-  maxSpeed: 12,
+  maxSpeed: 15,
 })
 
 // -- Hole 12: ring/donut, planets pull you around ------------------------------------------------
@@ -384,17 +411,18 @@ const l11 = makeLevel({
 const l12 = makeLevel({
   id: 'l12',
   name: 'The Ring',
-  hint: 'Go over the top or under the bottom and let the ring planets sling you around.',
+  hint: 'Go over the top or under the bottom, and keep clear of the saucer circling the ring.',
   par: 3,
   tee: v(-9, 0),
   course: rect(0, 0, 12, 9),
   islands: [rect(0, 0, 6, 4)],
   bodies: [
-    body('p1', 'planet', 12, 1.0, v(0, 6.5), LIME),
+    above(body('p1', 'planet', 12, 1.0, v(0, 6.5), LIME)),
     body('p2', 'planet', 12, 1.0, v(0, -6.5), PINK),
   ],
+  saucers: [railSaucer('ufo', { center: v(0, 0), radius: 7.6, period: 22, phase: 0 }, 1)],
   target: { pos: v(9, 0), radius: 0.6 },
-  maxSpeed: 12,
+  maxSpeed: 15,
 })
 
 // -- Hole 13: cup on a rail in a round room, at the end of a bent corridor ----------------------------
@@ -413,7 +441,7 @@ const l13 = makeLevel({
     radius: 0.6,
     rail: { center: v(6, 5), radius: 2.2, period: 12, phase: Math.PI / 2 },
   },
-  maxSpeed: 12,
+  maxSpeed: 15,
 })
 
 // -- Hole 14: spiral inward, three turns, planet curling the final approach --------------------------
@@ -421,14 +449,15 @@ const l13 = makeLevel({
 const l14 = makeLevel({
   id: 'l14',
   name: 'Inward Spiral',
-  hint: 'Work around each arm of the spiral and let the last planet curl you into the centre.',
+  hint: 'Work around each arm of the spiral, slip past the saucer, and let the last planet curl you in.',
   par: 5,
   tee: v(-15, -8),
   course: corridor([v(-15, -8), v(13, -8), v(13, 6), v(-9, 6), v(-9, -2)], { width: 2 }),
   islands: [],
   bodies: [body('p1', 'planet', 10, 0.8, v(-9, 2.5), MAGENTA)],
+  saucers: [patrolSaucer('ufo', v(13, -4), v(13, 3), 10, 0.8)],
   target: { pos: v(-9, -2), radius: 0.6 },
-  maxSpeed: 12,
+  maxSpeed: 15,
 })
 
 // -- Hole 15: twin black holes flanking a narrow bridge -----------------------------------------------
@@ -443,10 +472,10 @@ const l15 = makeLevel({
   islands: [],
   bodies: [
     body('bh1', 'blackhole', 16, 0.45, v(0, 2.2), HOLE_A),
-    body('bh2', 'blackhole', 16, 0.45, v(0, -2.2), HOLE_B),
+    above(body('bh2', 'blackhole', 16, 0.45, v(0, -2.2), HOLE_B)),
   ],
   target: { pos: v(14, 0), radius: 0.6 },
-  maxSpeed: 12,
+  maxSpeed: 15,
 })
 
 // -- Hole 16: slalom, alternating planets and islands ---------------------------------------------
@@ -461,12 +490,12 @@ const l16 = makeLevel({
   islands: [rect(-6.5, -2.6, 1, 0.9), rect(7.5, 2.6, 1, 0.9)],
   bodies: [
     body('p1', 'planet', 7.5, 0.9, v(-10, 1.6), ORANGE),
-    body('p2', 'planet', 7.5, 0.9, v(-2, -1.6), CYAN),
+    above(body('p2', 'planet', 7.5, 0.9, v(-2, -1.6), CYAN)),
     body('p3', 'planet', 7.5, 0.9, v(3.5, 1.6), PINK),
-    body('p4', 'planet', 7.5, 0.9, v(11, -1.6), LIME),
+    above(body('p4', 'planet', 7.5, 0.9, v(11, -1.6), LIME)),
   ],
   target: { pos: v(16, 0), radius: 0.6 },
-  maxSpeed: 12,
+  maxSpeed: 15,
 })
 
 // -- Hole 17: pinball room, irregular walls, island bumpers, moons on rails --------------------------
@@ -492,15 +521,17 @@ const l17 = makeLevel({
   islands: [rect(-3, -1.5, 0.7, 0.7), rect(3.5, 2, 0.7, 0.7), rect(-6, 3.5, 0.7, 0.7)],
   bodies: [
     body('m1', 'moon', 2, 0.4, v(2, -2), MOON_A, { center: v(-2, -2), radius: 4, period: 8, phase: 0 }),
-    body('m2', 'moon', 2, 0.4, v(8.5, 1), MOON_B, {
-      center: v(4, 1),
-      radius: 4.5,
-      period: -11,
-      phase: Math.PI,
-    }),
+    above(
+      body('m2', 'moon', 2, 0.4, v(8.5, 1), MOON_B, {
+        center: v(4, 1),
+        radius: 4.5,
+        period: -11,
+        phase: Math.PI,
+      }),
+    ),
   ],
   target: { pos: v(9, 3), radius: 0.6 },
-  maxSpeed: 12,
+  maxSpeed: 15,
 })
 
 // -- Hole 18: grand tour, four turns, a planet at each bend, moon, black hole near the approach --------
@@ -508,20 +539,21 @@ const l17 = makeLevel({
 const l18 = makeLevel({
   id: 'l18',
   name: 'Grand Tour',
-  hint: 'Play through each bend in turn and carry your line past the black hole to the cup.',
+  hint: 'Play through each bend in turn, or gamble on the wormhole in the first corner to skip one.',
   par: 4,
   tee: v(-16, -8),
   course: corridor([v(-16, -8), v(-4, -8), v(-4, -2), v(6, -2), v(6, 4), v(16, 4)], { width: 2.4 }),
   islands: [rect(-10, -8, 0.7, 0.7)],
   bodies: [
     body('p1', 'planet', 4.5, 0.8, v(-4, -5.5), ORANGE),
-    body('p2', 'planet', 4.5, 0.8, v(1, -3.0), CYAN),
+    above(body('p2', 'planet', 4.5, 0.8, v(1, -3.0), CYAN)),
     body('p3', 'planet', 4.5, 0.8, v(6, 1.5), PINK),
     body('m1', 'moon', 2, 0.4, v(12.8, 4), MOON_A, { center: v(11, 4), radius: 1.8, period: 10, phase: 0 }),
     body('bh', 'blackhole', 9, 0.45, v(13, 3), HOLE_C),
   ],
+  wormholes: [wormhole('w1', v(-2.5, -7.4), v(-2, -1.3))],
   target: { pos: v(16, 4), radius: 0.6 },
-  maxSpeed: 12,
+  maxSpeed: 15,
 })
 
 export const LEVELS: Level[] = [l01, l02, l03, l04, l05, l06, l07, l08, l09, l10, l11, l12, l13, l14, l15, l16, l17, l18]

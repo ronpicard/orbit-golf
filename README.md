@@ -10,7 +10,8 @@ Orbit Golf is a 3D mini-golf puzzle game that runs in the browser. Drag to turn 
 - A first-visit coach mark shows new players how dragging maps to turning and power, and a power meter fills as you drag.
 - The ball banks off the walls and rolls with real friction until it stops; a short comet tail follows it while it rolls and vanishes once it settles, and you play your next stroke from wherever it lies.
 - A ball crossing the cup too fast lips out instead of dropping in.
-- Touching a planet, moon, asteroid, or black hole — or leaving the course — is a hazard: you replay the stroke from where it started, and the stroke still counts.
+- Touching a planet, moon, asteroid, or black hole, rolling through a saucer's beam, or leaving the course is a hazard: you replay the stroke from where it started, and the stroke still counts.
+- A wormhole carries the ball from one mouth to its twin at the same speed and heading. The aim preview stops at the mouth.
 - Ten strokes is the limit per hole; if you haven't holed out by then, the hole is picked up and scored at ten.
 - Scores use golf names: hole in one, eagle, birdie, par, bogey.
 - Progress and best scores are saved in your browser, and holes unlock in order as you complete them.
@@ -26,20 +27,20 @@ Eighteen holes make up a front nine and a back nine, shown as a scorecard on the
 | 2 | Gentle Bend | 3 | A single dogleg, with a planet on the inside of the turn to curl the putt around it. |
 | 3 | Right Angle | 3 | A 90-degree corner: bank off the chamfer, or let the corner planet swing you around it. |
 | 4 | Slingshot | 3 | A straight lane with a big planet parked dead centre — swing past a shoulder and let it fling you on. |
-| 5 | S-Curve | 3 | Two opposite bends in a row; ride the near wall and let each bend carry you into the next. |
+| 5 | S-Curve | 3 | Two opposite bends in a row, with a saucer sweeping its beam across the middle lane: time your run. |
 | 6 | Chicane | 3 | Island blocks force a weave through a wide room while a moon patrols the gap on a rail. |
 | 7 | U-Turn | 4 | A hairpin corridor with a planet at the pivot to curl the shot back the way it came. |
 | 8 | Event Horizon | 2 | A wide bowl room with a black hole in the middle — go wide around it and let the bowl carry you on. |
-| 9 | Zigzag | 3 | A corridor with three turns in sequence, chamfered so each bank carries into the next. |
+| 9 | Wormhole | 3 | Two rooms sealed off by a wall. The only way to the cup is through the wormhole. |
 | 10 | The Funnel | 3 | The corridor pinches to a narrow neck between two small planets guarding the gate. |
 | 11 | Dead End | 3 | A T-junction where the obvious branch hides a black hole; the real cup is down the other arm. |
-| 12 | The Ring | 3 | A ring-shaped room around a central island, with a planet at the top and bottom to sling you around it. |
+| 12 | The Ring | 3 | A ring-shaped room around a central island, with a planet at the top and bottom to sling you around it and a saucer circling the ring. |
 | 13 | Moving Green | 3 | A bent corridor opening into a round room where the cup itself rides a rail — lead your shot. |
-| 14 | Inward Spiral | 5 | A spiral corridor with three turns, closing in on a planet that curls the final approach to the centre. |
+| 14 | Inward Spiral | 5 | A spiral corridor with three turns and a saucer patrolling the second arm, closing in on a planet that curls the final approach. |
 | 15 | The Bridge | 3 | A straight lane threaded between two black holes flanking a narrow bridge down the middle. |
 | 16 | Slalom | 3 | Four planets alternate above and below the line, with blocks between them forcing a weaving putt. |
 | 17 | Pinball | 3 | An irregular bumper room with island blocks and two moons sweeping past on rails. |
-| 18 | Grand Tour | 4 | A four-turn corridor chaining three planets, a moon, and a black hole into one final run to the cup. |
+| 18 | Grand Tour | 4 | A four-turn corridor chaining three planets, a moon, and a black hole, with a wormhole shortcut in the first corner. |
 
 There's also a Sandbox for free experimentation: place small, medium, and large planets or black holes, erase bodies you don't want, and try up to 10 bodies at once inside a walled rectangular room.
 
@@ -62,7 +63,9 @@ The simulation advances on a fixed time step of 1/240 second. Each step runs, in
 
 Rolling friction and drag are what make this a putting green rather than an orbit: a ball is dissipative on purpose, so every putt eventually settles instead of circling forever. The ball only counts as resting once it is slow enough *and* the local gravity at that point is too weak to restart it — otherwise it keeps rolling downhill, exactly like a ball left on a real sloped green. A ball that crosses the cup above a capture speed lips out instead of dropping in, so a hot putt can run straight through the hole.
 
-Moons and moving cups don't feel gravity themselves — they ride fixed circular rails with a set period and phase. Rails restart from t = 0 at the start of every stroke, so the same aim, at the same power, from the same lie, always produces the same flight: every stroke is fully deterministic and replayable.
+Moons, saucers, and moving cups don't feel gravity themselves: they ride fixed rails or patrol lines with a set period and phase, driven by one course clock that starts when the hole loads and keeps running between strokes. A stroke is fully determined by its lie, its aim, and the clock at the moment of the strike, so the aim preview is exact for a putt struck right now, and waiting for a mover to clear is a real tactic.
+
+A body can hang below the sheet or above it. The sheet sinks into a well around a body below and rises into a hill under one overhead, and black holes bend it far more than planets. This is drawing only: the pull on the ball is the same on either side.
 
 The rubber-sheet fairway you see under the ball isn't decoration — it's a direct visualisation of the gravitational potential well, computed live in the vertex shader from the same body positions and masses used by the physics. Its height is a smooth-clamped potential, `depth = D * (1 - exp(-raw / D))`, where `raw` is the steepened sum of each body's inverse-distance pull; the identical function runs in the vertex shader and in TypeScript, so the ball, trails, and bodies all sit on the surface exactly where the grid says they should. This clamping is a visualisation only — the underlying physics stays plain planar Newtonian gravity, unaffected by how the sheet is drawn. Gravity itself is tuned strong enough that putts curve visibly, and because the ball slows as it rolls, the curve grows the longer a putt runs.
 

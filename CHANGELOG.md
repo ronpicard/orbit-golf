@@ -2,6 +2,21 @@
 
 All notable changes to Orbit Golf are documented in this file, following the [Keep a Changelog](https://keepachangelog.com/) format.
 
+## [2.2.0] - 2026-09-20
+
+### Added
+
+- Wormholes: a ball that rolls into one mouth comes out of its twin at the same speed and heading. Hole 9 is now "Wormhole", two sealed rooms joined only by one, and hole 18 hides a shortcut in its first corner.
+- Patrolling alien saucers on holes 5, 12, and 14. A ball caught in a saucer's scanning beam is abducted: you replay the stroke and it still counts.
+- Bodies can now hang above the fairway as well as below it. The sheet rises into a hill under a body overhead and sinks into a well around one below, and the pull on the ball is the same either way.
+
+### Changed
+
+- Putts are 25% stronger at full power.
+- Planets, moons, and black holes now float in the mouth of their well instead of sitting at the bottom of it, so you can see them from the tee. Black holes dig a much deeper well than planets, and moons a shallower one.
+- Moons, saucers, and the moving cup are in motion from the moment a hole loads, and keep moving between strokes. The aim preview follows them, so timing a putt is now part of the game.
+- The obstacle blocks inside some holes are now lit bumpers with a striped top, so they no longer read as blank dark squares.
+
 ## [2.1.0] - 2026-09-20
 
 ### Changed

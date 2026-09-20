@@ -6,6 +6,12 @@ export interface Vec2 {
 
 export type BodyKind = 'planet' | 'moon' | 'blackhole' | 'asteroid'
 
+/**
+ * Which side of the fairway sheet a body hangs on. Render-only: a body 'below' pulls the sheet
+ * down into a well, a body 'above' lifts it into a hill. The pull on the ball is the same.
+ */
+export type BodySide = 'above' | 'below'
+
 /** A circular rail. Bodies on rails ignore gravity so every shot is deterministic. */
 export interface Rail {
   center: Vec2
@@ -26,8 +32,41 @@ export interface Body {
   radius: number
   pos: Vec2
   rail?: Rail
+  /** Defaults to 'below'. */
+  side?: BodySide
   /** Two CSS hex colors used by the procedural surface shader. */
   palette: [string, string]
+}
+
+/** A straight back-and-forth beat between two points, easing at each end. */
+export interface Patrol {
+  a: Vec2
+  b: Vec2
+  /** Seconds for a full there-and-back trip. */
+  period: number
+  /** Fraction of the trip already done at t = 0, in [0, 1). */
+  phase: number
+}
+
+/** A linked pair of mouths. A ball rolling into one comes out of the other at the same velocity. */
+export interface Wormhole {
+  id: string
+  a: Vec2
+  b: Vec2
+  radius: number
+}
+
+/**
+ * A patrolling alien saucer. Its scanning beam covers a circle on the fairway; a ball caught in
+ * the beam is abducted, which ends the shot as a hazard.
+ */
+export interface Saucer {
+  id: string
+  /** Radius of the beam's footprint on the fairway. */
+  radius: number
+  pos: Vec2
+  rail?: Rail
+  patrol?: Patrol
 }
 
 /** The cup. */
@@ -61,6 +100,8 @@ export interface Level {
   /** Inner wall blocks, each a closed polygon. */
   islands: Vec2[][]
   bodies: Body[]
+  wormholes?: Wormhole[]
+  saucers?: Saucer[]
   target: Target
   /** Bounding box of `course`. Used to frame the minimap and size the sheet. */
   bounds: Bounds
@@ -78,8 +119,14 @@ export interface Aim {
 export interface BallState {
   pos: Vec2
   vel: Vec2
-  /** Seconds since this shot was struck. Rails restart from t = 0 on every shot. */
+  /** Seconds since this shot was struck. */
   t: number
+  /** Course time, which drives every rail and patrol. It keeps running between shots. */
+  clock: number
+  /** Number of wormhole trips so far in this shot. */
+  warps: number
+  /** True while the ball is still inside a wormhole mouth, so it cannot bounce straight back. */
+  inWormhole: boolean
   /** Number of wall bounces so far in this shot. */
   bounces: number
   /** Speed into the wall at the most recent bounce. Lets the renderer scale sound and sparks. */
@@ -93,14 +140,20 @@ export interface BallState {
  */
 export type Outcome = 'goal' | 'rest' | 'hazard'
 
+/** What caused a 'hazard': a gravitating body, a saucer's beam, or leaving the course. */
+export type HazardKind = 'body' | 'saucer' | 'bounds'
+
 export interface ShotResult {
   outcome: Outcome
-  /** Id of the body hit when outcome is 'hazard'; null when the ball left the course. */
+  /** Id of the body or saucer when outcome is 'hazard'; null when the ball left the course. */
   hazardId: string | null
+  /** Null unless outcome is 'hazard'. */
+  hazardKind: HazardKind | null
   time: number
   /** Closest approach to the cup centre over the shot. */
   closest: number
   /** Where the ball ended up. For 'hazard' this is where it was lost, not where play resumes. */
   end: Vec2
   bounces: number
+  warps: number
 }
