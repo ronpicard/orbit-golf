@@ -299,3 +299,88 @@ test('makeSandboxBody sizes match spec', () => {
   assert.ok(Math.abs(hole.mu - 34 * GRAVITY_SCALE) < 1e-9)
   assert.equal(hole.radius, 0.45)
 })
+
+interface FeatureAnchor {
+  id: string
+  pos: Vec2
+  radius: number
+  railedSaucer: boolean
+}
+
+function featureAnchors(level: Level): FeatureAnchor[] {
+  const anchors: FeatureAnchor[] = []
+
+  for (const body of level.bodies) {
+    const pos = body.rail ? body.rail.center : body.pos
+    const radius = body.rail ? body.rail.radius + body.radius : body.radius
+    anchors.push({ id: body.id, pos, radius, railedSaucer: false })
+  }
+
+  for (const w of level.wormholes ?? []) {
+    anchors.push({ id: `${w.id}.a`, pos: w.a, radius: w.radius, railedSaucer: false })
+    anchors.push({ id: `${w.id}.b`, pos: w.b, radius: w.radius, railedSaucer: false })
+  }
+
+  for (const s of level.saucers ?? []) {
+    if (s.rail) {
+      anchors.push({ id: s.id, pos: s.rail.center, radius: s.rail.radius, railedSaucer: true })
+    } else if (s.patrol) {
+      const mid = { x: (s.patrol.a.x + s.patrol.b.x) / 2, y: (s.patrol.a.y + s.patrol.b.y) / 2 }
+      anchors.push({ id: s.id, pos: mid, radius: s.radius, railedSaucer: false })
+    } else {
+      anchors.push({ id: s.id, pos: s.pos, radius: s.radius, railedSaucer: false })
+    }
+  }
+
+  level.islands.forEach((island, i) => {
+    const cx = island.reduce((sum, v) => sum + v.x, 0) / island.length
+    const cy = island.reduce((sum, v) => sum + v.y, 0) / island.length
+    anchors.push({ id: `island${i}`, pos: { x: cx, y: cy }, radius: 0, railedSaucer: false })
+  })
+
+  return anchors
+}
+
+function dist(a: Vec2, b: Vec2): number {
+  return Math.hypot(a.x - b.x, a.y - b.y)
+}
+
+test('no feature has more than one other feature within 5 units (courses stay uncluttered)', () => {
+  for (const level of LEVELS) {
+    const anchors = featureAnchors(level)
+    for (const anchor of anchors) {
+      const neighbors = anchors.filter((other) => {
+        if (other.id === anchor.id) return false
+        if (anchor.railedSaucer || other.railedSaucer) return false
+        return dist(anchor.pos, other.pos) < 5
+      })
+      assert.ok(
+        neighbors.length <= 1,
+        `level ${level.id}: feature ${anchor.id} has ${neighbors.length} neighbors within 5 units: ${neighbors.map((n) => n.id).join(', ')}`,
+      )
+    }
+  }
+})
+
+test('static bodies and wormhole mouths never overlap each other', () => {
+  for (const level of LEVELS) {
+    const anchors = featureAnchors(level)
+      .filter((a) => level.bodies.some((b) => b.id === a.id) || a.id.endsWith('.a') || a.id.endsWith('.b'))
+      .filter((a) => {
+        const body = level.bodies.find((b) => b.id === a.id)
+        return !body || !body.rail
+      })
+
+    for (let i = 0; i < anchors.length; i++) {
+      for (let j = i + 1; j < anchors.length; j++) {
+        const a = anchors[i]
+        const b = anchors[j]
+        const d = dist(a.pos, b.pos)
+        assert.ok(
+          d >= a.radius + b.radius + 1,
+          `level ${level.id}: ${a.id} and ${b.id} overlap (distance ${d.toFixed(2)}, need >= ${(a.radius + b.radius + 1).toFixed(2)})`,
+        )
+      }
+    }
+  }
+})

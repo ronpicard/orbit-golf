@@ -6,8 +6,8 @@ import { bodyPosition } from '../game/physics.ts'
  * `wellDepthAt` below and the `wellDepth()` GLSL function in `WELL_DEPTH_GLSL` must compute the
  * identical smooth-clamped depth, so the ground mesh and everything resting on it agree exactly.
  *
- * Depth is signed. A body hanging below the sheet pulls it down into a well (positive depth); a
- * body floating above lifts it into a hill (negative depth). The pull on the ball is the same
+ * Depth is signed. A body on the `below` side presses the sheet down into a well (positive depth);
+ * a body on the `above` side lifts it into a hill (negative depth). The pull on the ball is the same
  * either way: the sheet only shows which side the mass is on.
  */
 
@@ -15,11 +15,16 @@ import { bodyPosition } from '../game/physics.ts'
 export const WELL_K = 0.14
 /** Asymptotic maximum depth of a well: raw potential approaches, never exceeds, this. */
 export const WELL_D = 4.4
-/** Asymptotic maximum height of a hill. Lower than a well so a hill never hides the hole. */
-export const HILL_D = 2.4
+/** Asymptotic maximum height of a hill. A little lower than a well so a hill never hides the hole. */
+export const HILL_D = 3.4
+/** Outer radius of a black hole's accretion disc, in body radii. The disc rests on the sheet. */
+export const BLACKHOLE_DISC_SCALE = 4.2
 
-/** How hard each kind of body bends the sheet for its mass. A black hole digs far deeper. */
-const KIND_BEND: Record<BodyKind, number> = { planet: 1, moon: 0.85, blackhole: 1.9, asteroid: 0 }
+/**
+ * How hard each kind of body bends the sheet for its mass. Planets and moons only dimple it, so
+ * they sit slightly below (or above) the fairway; a black hole digs a pit or raises a peak.
+ */
+const KIND_BEND: Record<BodyKind, number> = { planet: 0.23, moon: 0.23, blackhole: 1.9, asteroid: 0 }
 
 /**
  * The signed mass the sheet sees for a body: mu scaled by kind, negative for a body above the
@@ -49,15 +54,21 @@ export function wellDepthAt(level: Level, x: number, y: number, t: number): numb
 }
 
 /**
- * World height of a body's centre. A body below the sheet floats in the mouth of its well, high
- * enough to be seen from the tee; a body above hovers clear of the crest of its hill.
+ * World height of a body's centre. Every body rests on the sheet: a sphere sits on the floor of its
+ * dimple or the crest of its hill. A black hole in a pit is held up by its accretion disc, whose
+ * rim lies on the funnel wall, so the disc never cuts through the fairway.
  */
 export function bodyHeight(level: Level, body: Body, t: number): number {
   const p = bodyPosition(body, t)
-  const depth = wellDepthAt(level, p.x, p.y, t)
-  if (body.side === 'above') return -depth + body.radius + 0.9
-  if (body.mu <= 0) return -depth + body.radius * 0.6
-  return -0.3 * depth + body.radius * 0.6
+  const resting = -wellDepthAt(level, p.x, p.y, t) + body.radius
+  if (body.kind !== 'blackhole') return resting
+  const rim = body.radius * BLACKHOLE_DISC_SCALE * 0.55
+  let floor = -Infinity
+  for (let i = 0; i < 8; i++) {
+    const a = (i / 8) * Math.PI * 2
+    floor = Math.max(floor, -wellDepthAt(level, p.x + Math.cos(a) * rim, p.y + Math.sin(a) * rim, t))
+  }
+  return Math.max(resting, floor + 0.06)
 }
 
 /**

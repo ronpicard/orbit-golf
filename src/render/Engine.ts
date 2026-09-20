@@ -47,7 +47,7 @@ import {
   createSunSprite,
   createWellMaterial,
 } from './shaders.ts'
-import { bodyHeight, sheetMass, wellDepthAt } from './sheet.ts'
+import { BLACKHOLE_DISC_SCALE, bodyHeight, sheetMass, wellDepthAt } from './sheet.ts'
 import { ActiveTrail } from './trails.ts'
 import { buildSaucerVisual, buildWormholeVisual, wormholeColor } from './hazards.ts'
 import type { SaucerVisual, WormholeVisual } from './hazards.ts'
@@ -233,46 +233,6 @@ function buildRailVisual(rail: Rail | undefined, color: number): RailVisual | nu
   }
 }
 
-/**
- * A faint vertical line from a body's centre down to the sheet crest below it. Only drawn for
- * bodies with `side: 'above'`, so the player reads that the mass is hanging overhead rather than
- * sitting in a well.
- */
-interface TetherVisual {
-  line: THREE.Line
-  /** `topLocalY`/`bottomLocalY` are in the parent group's local space (the body's own position is 0). */
-  update(topLocalY: number, bottomLocalY: number): void
-  dispose(): void
-}
-
-function buildTether(): TetherVisual {
-  const geometry = new THREE.BufferGeometry()
-  const positions = new Float32Array(6)
-  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
-  const material = new THREE.LineBasicMaterial({
-    color: 0xbfefff,
-    transparent: true,
-    opacity: 0.35,
-    blending: THREE.AdditiveBlending,
-    depthWrite: false,
-  })
-  const line = new THREE.Line(geometry, material)
-  const posAttr = geometry.attributes.position as THREE.BufferAttribute
-  return {
-    line,
-    update(topLocalY, bottomLocalY) {
-      const arr = posAttr.array as Float32Array
-      arr[1] = topLocalY
-      arr[4] = bottomLocalY
-      posAttr.needsUpdate = true
-    },
-    dispose() {
-      geometry.dispose()
-      material.dispose()
-    },
-  }
-}
-
 // --- Body visual builders (hazards: planets, moons, black holes, asteroids) -----------------------
 
 interface BodyVisual {
@@ -326,9 +286,6 @@ function buildPlanetVisual(body: Body, _ctx: VisualCtx): BodyVisual {
   const rail = buildRailVisual(body.rail, 0x8899aa)
   if (rail) group.add(rail.line)
 
-  const tether = body.side === 'above' ? buildTether() : null
-  if (tether) group.add(tether.line)
-
   return {
     group,
     update(lvl, t, dt, elapsed) {
@@ -338,10 +295,6 @@ function buildPlanetVisual(body: Body, _ctx: VisualCtx): BodyVisual {
       mesh.rotation.y += dt * 0.06
       if (!isMoon) material.uniforms.uTime.value = elapsed
       rail?.update(lvl, t)
-      if (tether) {
-        const depth = wellDepthAt(lvl, p.x, p.y, t)
-        tether.update(0, -depth - y)
-      }
     },
     dispose() {
       geometry.dispose()
@@ -351,7 +304,6 @@ function buildPlanetVisual(body: Body, _ctx: VisualCtx): BodyVisual {
       ringGeometry?.dispose()
       ringMaterial?.dispose()
       rail?.dispose()
-      tether?.dispose()
     },
   }
 }
@@ -363,7 +315,7 @@ function buildBlackHoleVisual(body: Body, ctx: VisualCtx): BodyVisual {
   const coreMaterial = new THREE.MeshBasicMaterial({ color: 0x000000 })
   group.add(new THREE.Mesh(coreGeometry, coreMaterial))
 
-  const discGeometry = new THREE.RingGeometry(body.radius * 1.5, body.radius * 4.2, 96)
+  const discGeometry = new THREE.RingGeometry(body.radius * 1.5, body.radius * BLACKHOLE_DISC_SCALE, 96)
   const discMaterial = createAccretionDiscMaterial()
   const disc = new THREE.Mesh(discGeometry, discMaterial)
   disc.rotation.x = -Math.PI / 2
@@ -383,9 +335,6 @@ function buildBlackHoleVisual(body: Body, ctx: VisualCtx): BodyVisual {
   const rail = buildRailVisual(body.rail, 0x8899aa)
   if (rail) group.add(rail.line)
 
-  const tether = body.side === 'above' ? buildTether() : null
-  if (tether) group.add(tether.line)
-
   let spawnTimer = 0
 
   return {
@@ -399,10 +348,6 @@ function buildBlackHoleVisual(body: Body, ctx: VisualCtx): BodyVisual {
       photonMaterial.uniforms.uTime.value = elapsed
       haloMaterial.uniforms.uTime.value = elapsed
       rail?.update(lvl, t)
-      if (tether) {
-        const depth = wellDepthAt(lvl, p.x, p.y, t)
-        tether.update(0, -depth - y)
-      }
 
       // ~80 particles spiralling inward along the funnel at any time (life ~1s, respawned continuously).
       spawnTimer -= dt
@@ -428,7 +373,6 @@ function buildBlackHoleVisual(body: Body, ctx: VisualCtx): BodyVisual {
       haloGeometry.dispose()
       haloMaterial.dispose()
       rail?.dispose()
-      tether?.dispose()
     },
   }
 }
@@ -451,9 +395,6 @@ function buildAsteroidVisual(body: Body): BodyVisual {
   const rail = buildRailVisual(body.rail, 0x8899aa)
   if (rail) group.add(rail.line)
 
-  const tether = body.side === 'above' ? buildTether() : null
-  if (tether) group.add(tether.line)
-
   return {
     group,
     update(lvl, t, dt) {
@@ -462,16 +403,11 @@ function buildAsteroidVisual(body: Body): BodyVisual {
       group.position.set(p.x, y, p.y)
       mesh.rotateOnAxis(spinAxis, dt * 0.15)
       rail?.update(lvl, t)
-      if (tether) {
-        const depth = wellDepthAt(lvl, p.x, p.y, t)
-        tether.update(0, -depth - y)
-      }
     },
     dispose() {
       geometry.dispose()
       material.dispose()
       rail?.dispose()
-      tether?.dispose()
     },
   }
 }

@@ -2,6 +2,18 @@
 
 All notable changes to Orbit Golf are documented in this file, following the [Keep a Changelog](https://keepachangelog.com/) format.
 
+## [2.3.0] - 2026-09-20
+
+### Changed
+
+- A full-power putt now rolls about 70% farther.
+- Every planet, moon, and black hole rests on the fairway instead of floating over it. Planets and moons sit in a shallow dimple or on a low rise; black holes sit deep in a pit or high on a peak.
+- Courses are less crowded. Hole 18 drops a planet, its moon, and its block, and holes 6 and 9 spread their features out. No feature now has more than one other within 5 units.
+
+### Fixed
+
+- Black holes and planets sunk in a well no longer show through the fairway in front of them.
+
 ## [2.2.0] - 2026-09-20
 
 ### Added

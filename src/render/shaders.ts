@@ -534,8 +534,8 @@ export function createWellMaterial(maskTexture: THREE.Texture): THREE.ShaderMate
         pulse = clamp(pulse, 0.0, 1.0);
 
         float camFade = 1.0 - smoothstep(40.0, 90.0, length(uCameraPos.xz - vGridXZ));
-        // Nearly opaque turf: background scenery must never show through the fairway.
-        float fillAlpha = 0.93 * mask;
+        // Opaque turf: nothing behind or beneath the fairway may show through it.
+        float fillAlpha = mask;
         float lineAlpha = line * mask * (0.35 + 0.55 * depthN + 0.3 * pulse + 0.6 * slopeBoost) * camFade;
         lineColor = mix(lineColor, vec3(1.0), slopeBoost * 0.35);
 
@@ -545,7 +545,12 @@ export function createWellMaterial(maskTexture: THREE.Texture): THREE.ShaderMate
       }
     `,
     transparent: true,
-    depthWrite: false,
+    // The sheet writes depth so a body sunk in a well is hidden by the rim in front of it. The
+    // offset keeps decals lying on the sheet (cup, tee ring, wormholes) from z-fighting with it.
+    depthWrite: true,
+    polygonOffset: true,
+    polygonOffsetFactor: 2,
+    polygonOffsetUnits: 2,
     side: THREE.DoubleSide,
   })
 }

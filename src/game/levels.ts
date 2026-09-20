@@ -213,7 +213,7 @@ export const SANDBOX_LEVEL: Level = makeLevel({
   islands: [],
   bodies: [],
   target: { pos: v(13, 0), radius: 0.6 },
-  maxSpeed: 15,
+  maxSpeed: 22,
 })
 
 // -- Hole 1: straight lane, one small planet beside the line --------------------------------------
@@ -228,7 +228,7 @@ const l01 = makeLevel({
   islands: [],
   bodies: [body('p1', 'planet', 6, 0.7, v(-2, 1.5), ORANGE)],
   target: { pos: v(14, 0), radius: 0.6 },
-  maxSpeed: 15,
+  maxSpeed: 22,
 })
 
 // -- Hole 2: gentle dogleg (one 45-degree bend) with a planet on the inside -----------------------
@@ -243,7 +243,7 @@ const l02 = makeLevel({
   islands: [],
   bodies: [above(body('p1', 'planet', 9, 0.8, v(-4, -1.5), CYAN))],
   target: { pos: v(9, 7), radius: 0.6 },
-  maxSpeed: 15,
+  maxSpeed: 22,
 })
 
 // -- Hole 3: L-shape, 90-degree turn --------------------------------------------------------------
@@ -258,7 +258,7 @@ const l03 = makeLevel({
   islands: [],
   bodies: [body('p1', 'planet', 11, 0.9, v(-3, -2.7), PINK)],
   target: { pos: v(2, 8), radius: 0.6 },
-  maxSpeed: 15,
+  maxSpeed: 22,
 })
 
 // -- Hole 4: straight lane, big planet dead centre (slingshot) -------------------------------------
@@ -273,7 +273,7 @@ const l04 = makeLevel({
   islands: [],
   bodies: [body('p1', 'planet', 20, 1.3, v(0, 0), PURPLE)],
   target: { pos: v(14, 0), radius: 0.6 },
-  maxSpeed: 15,
+  maxSpeed: 22,
 })
 
 // -- Hole 5: S-curve (two opposite bends), a saucer sweeping across the middle ---------------------
@@ -289,7 +289,7 @@ const l05 = makeLevel({
   bodies: [],
   saucers: [patrolSaucer('ufo', v(-1.3, 1.3), v(1.3, -1.3), 6)],
   target: { pos: v(14, 5), radius: 0.6 },
-  maxSpeed: 15,
+  maxSpeed: 22,
 })
 
 // -- Hole 6: wide room, chicane islands, patrolling moon --------------------------------------------
@@ -301,7 +301,7 @@ const l06 = makeLevel({
   par: 3,
   tee: v(-14, 0),
   course: corridor([v(-14, 0), v(14, 0)], { width: 4.6 }),
-  islands: [rect(-3.5, 2.6, 1.2, 1.5), rect(3.5, -2.6, 1.2, 1.5)],
+  islands: [rect(-4.5, 2.6, 1.2, 1.5), rect(4.5, -2.6, 1.2, 1.5)],
   bodies: [
     body('m1', 'moon', 2, 0.4, v(1.5, 0), MOON_A, {
       center: v(0, 0),
@@ -311,7 +311,7 @@ const l06 = makeLevel({
     }),
   ],
   target: { pos: v(14, 0), radius: 0.6 },
-  maxSpeed: 15,
+  maxSpeed: 22,
 })
 
 // -- Hole 7: U-turn, planet at the pivot ------------------------------------------------------------
@@ -326,7 +326,7 @@ const l07 = makeLevel({
   islands: [],
   bodies: [above(body('p1', 'planet', 14, 0.8, v(6, 0), LIME))],
   target: { pos: v(-14, -3), radius: 0.6 },
-  maxSpeed: 15,
+  maxSpeed: 22,
 })
 
 // -- Hole 8: black hole in a wide bowl room, cup beyond ----------------------------------------------
@@ -341,7 +341,7 @@ const l08 = makeLevel({
   islands: [],
   bodies: [body('bh', 'blackhole', 32, 0.5, v(0, 0), HOLE_A)],
   target: { pos: v(9.5, 0), radius: 0.6 },
-  maxSpeed: 15,
+  maxSpeed: 22,
 })
 
 // -- Hole 9: two sealed rooms joined only by a wormhole ---------------------------------------------
@@ -357,9 +357,9 @@ const l09 = makeLevel({
   // two rooms are sealed from each other.
   islands: [rect(0, 0, 0.6, 5.98)],
   bodies: [body('p1', 'planet', 9, 0.8, v(8, 2.5), ROSE)],
-  wormholes: [wormhole('w1', v(-4, 2.5), v(4, -3))],
+  wormholes: [wormhole('w1', v(-5, 2.5), v(5, -3))],
   target: { pos: v(13, 1), radius: 0.6 },
-  maxSpeed: 15,
+  maxSpeed: 22,
 })
 
 // -- Hole 10: funnel, two small planets guarding the neck --------------------------------------------
@@ -377,7 +377,7 @@ const l10 = makeLevel({
     body('p2', 'planet', 5, 0.55, v(1.4, -0.8), CYAN),
   ],
   target: { pos: v(14, 0), radius: 0.6 },
-  maxSpeed: 15,
+  maxSpeed: 22,
 })
 
 // -- Hole 11: T-junction, obvious branch is a dead end with a black hole -----------------------------
@@ -403,7 +403,7 @@ const l11 = makeLevel({
   islands: [],
   bodies: [body('bh', 'blackhole', 30, 0.45, v(-2, 7), HOLE_B)],
   target: { pos: v(-2, -7), radius: 0.6 },
-  maxSpeed: 15,
+  maxSpeed: 22,
 })
 
 // -- Hole 12: ring/donut, planets pull you around ------------------------------------------------
@@ -422,7 +422,7 @@ const l12 = makeLevel({
   ],
   saucers: [railSaucer('ufo', { center: v(0, 0), radius: 7.6, period: 22, phase: 0 }, 1)],
   target: { pos: v(9, 0), radius: 0.6 },
-  maxSpeed: 15,
+  maxSpeed: 22,
 })
 
 // -- Hole 13: cup on a rail in a round room, at the end of a bent corridor ----------------------------
@@ -441,7 +441,7 @@ const l13 = makeLevel({
     radius: 0.6,
     rail: { center: v(6, 5), radius: 2.2, period: 12, phase: Math.PI / 2 },
   },
-  maxSpeed: 15,
+  maxSpeed: 22,
 })
 
 // -- Hole 14: spiral inward, three turns, planet curling the final approach --------------------------
@@ -457,7 +457,7 @@ const l14 = makeLevel({
   bodies: [body('p1', 'planet', 10, 0.8, v(-9, 2.5), MAGENTA)],
   saucers: [patrolSaucer('ufo', v(13, -4), v(13, 3), 10, 0.8)],
   target: { pos: v(-9, -2), radius: 0.6 },
-  maxSpeed: 15,
+  maxSpeed: 22,
 })
 
 // -- Hole 15: twin black holes flanking a narrow bridge -----------------------------------------------
@@ -475,7 +475,7 @@ const l15 = makeLevel({
     above(body('bh2', 'blackhole', 16, 0.45, v(0, -2.2), HOLE_B)),
   ],
   target: { pos: v(14, 0), radius: 0.6 },
-  maxSpeed: 15,
+  maxSpeed: 22,
 })
 
 // -- Hole 16: slalom, alternating planets and islands ---------------------------------------------
@@ -495,7 +495,7 @@ const l16 = makeLevel({
     above(body('p4', 'planet', 7.5, 0.9, v(11, -1.6), LIME)),
   ],
   target: { pos: v(16, 0), radius: 0.6 },
-  maxSpeed: 15,
+  maxSpeed: 22,
 })
 
 // -- Hole 17: pinball room, irregular walls, island bumpers, moons on rails --------------------------
@@ -531,10 +531,10 @@ const l17 = makeLevel({
     ),
   ],
   target: { pos: v(9, 3), radius: 0.6 },
-  maxSpeed: 15,
+  maxSpeed: 22,
 })
 
-// -- Hole 18: grand tour, four turns, a planet at each bend, moon, black hole near the approach --------
+// -- Hole 18: grand tour, four turns, a wormhole shortcut, a black hole guarding the approach ----------
 
 const l18 = makeLevel({
   id: 'l18',
@@ -543,17 +543,15 @@ const l18 = makeLevel({
   par: 4,
   tee: v(-16, -8),
   course: corridor([v(-16, -8), v(-4, -8), v(-4, -2), v(6, -2), v(6, 4), v(16, 4)], { width: 2.4 }),
-  islands: [rect(-10, -8, 0.7, 0.7)],
+  islands: [],
   bodies: [
-    body('p1', 'planet', 4.5, 0.8, v(-4, -5.5), ORANGE),
-    above(body('p2', 'planet', 4.5, 0.8, v(1, -3.0), CYAN)),
-    body('p3', 'planet', 4.5, 0.8, v(6, 1.5), PINK),
-    body('m1', 'moon', 2, 0.4, v(12.8, 4), MOON_A, { center: v(11, 4), radius: 1.8, period: 10, phase: 0 }),
+    body('p1', 'planet', 4.5, 0.8, v(-10, -6.6), ORANGE),
+    above(body('p3', 'planet', 4.5, 0.8, v(6, 1.5), PINK)),
     body('bh', 'blackhole', 9, 0.45, v(13, 3), HOLE_C),
   ],
   wormholes: [wormhole('w1', v(-2.5, -7.4), v(-2, -1.3))],
   target: { pos: v(16, 4), radius: 0.6 },
-  maxSpeed: 15,
+  maxSpeed: 22,
 })
 
 export const LEVELS: Level[] = [l01, l02, l03, l04, l05, l06, l07, l08, l09, l10, l11, l12, l13, l14, l15, l16, l17, l18]

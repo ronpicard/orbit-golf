@@ -40,7 +40,7 @@ Eighteen holes make up a front nine and a back nine, shown as a scorecard on the
 | 15 | The Bridge | 3 | A straight lane threaded between two black holes flanking a narrow bridge down the middle. |
 | 16 | Slalom | 3 | Four planets alternate above and below the line, with blocks between them forcing a weaving putt. |
 | 17 | Pinball | 3 | An irregular bumper room with island blocks and two moons sweeping past on rails. |
-| 18 | Grand Tour | 4 | A four-turn corridor chaining three planets, a moon, and a black hole, with a wormhole shortcut in the first corner. |
+| 18 | Grand Tour | 4 | A four-turn corridor with a planet on the opening lane and another at the last bend, a wormhole shortcut in the first corner, and a black hole guarding the approach. |
 
 There's also a Sandbox for free experimentation: place small, medium, and large planets or black holes, erase bodies you don't want, and try up to 10 bodies at once inside a walled rectangular room.
 
@@ -65,7 +65,9 @@ Rolling friction and drag are what make this a putting green rather than an orbi
 
 Moons, saucers, and moving cups don't feel gravity themselves: they ride fixed rails or patrol lines with a set period and phase, driven by one course clock that starts when the hole loads and keeps running between strokes. A stroke is fully determined by its lie, its aim, and the clock at the moment of the strike, so the aim preview is exact for a putt struck right now, and waiting for a mover to clear is a real tactic.
 
-A body can hang below the sheet or above it. The sheet sinks into a well around a body below and rises into a hill under one overhead, and black holes bend it far more than planets. This is drawing only: the pull on the ball is the same on either side.
+A body bends the sheet down or up, and always rests on it. A planet or moon sits in a shallow dimple or on a low rise; a black hole sits deep in a pit or high on a peak. This is drawing only: the pull on the ball is the same on either side.
+
+Courses are kept uncluttered: a test fails if any planet, wormhole mouth, saucer, or block has more than one other feature within 5 units of it.
 
 The rubber-sheet fairway you see under the ball isn't decoration — it's a direct visualisation of the gravitational potential well, computed live in the vertex shader from the same body positions and masses used by the physics. Its height is a smooth-clamped potential, `depth = D * (1 - exp(-raw / D))`, where `raw` is the steepened sum of each body's inverse-distance pull; the identical function runs in the vertex shader and in TypeScript, so the ball, trails, and bodies all sit on the surface exactly where the grid says they should. This clamping is a visualisation only — the underlying physics stays plain planar Newtonian gravity, unaffected by how the sheet is drawn. Gravity itself is tuned strong enough that putts curve visibly, and because the ball slows as it rolls, the curve grows the longer a putt runs.
 
